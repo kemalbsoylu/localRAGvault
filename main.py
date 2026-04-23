@@ -1,7 +1,7 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from database import init_db, get_db_connection
-from utils import chunk_text, get_embedding
+from utils import chunk_text, get_embedding, generate_answer
 from pydantic import BaseModel
 
 
@@ -112,4 +112,46 @@ async def search_documents(search: SearchQuery):
     return {
         "query": search.query,
         "results": results
+    }
+
+
+@app.post("/ask/")
+async def ask_question(search: SearchQuery):
+    # Embed the question
+    query_embedding = get_embedding(search.query, model_name="nomic-embed-text")
+    if not query_embedding:
+        raise HTTPException(status_code=500, detail="Failed to generate query embedding.")
+
+    retrieved_chunks = []
+    sources = []
+
+    # Retrieve the most relevant chunks from Postgres
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                        SELECT filename, content, 1 - (embedding <=> %s::vector) AS similarity
+                        FROM documents
+                        ORDER BY embedding <=> %s::vector
+                            LIMIT %s;
+                        """, (query_embedding, query_embedding, search.top_k))
+
+            rows = cur.fetchall()
+            for row in rows:
+                filename, content, similarity = row[0], row[1], row[2]
+                retrieved_chunks.append(content)
+                # Keep track of where the data came from for transparency
+                sources.append({"filename": filename, "similarity": round(similarity, 4)})
+
+    # If nothing was found, return early
+    if not retrieved_chunks:
+        return {"query": search.query, "answer": "No relevant documents found in the vault.", "sources": []}
+
+    # Generate the final answer using gemma4
+    final_answer = generate_answer(query=search.query, context_chunks=retrieved_chunks, model_name="gemma4")
+
+    # Return the full RAG package
+    return {
+        "query": search.query,
+        "answer": final_answer,
+        "sources": sources
     }

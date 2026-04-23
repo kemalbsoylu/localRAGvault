@@ -29,3 +29,31 @@ def get_embedding(text: str, model_name: str = "nomic-embed-text") -> list[float
     except Exception as e:
         print(f"Error generating embedding: {e}")
         return []
+
+
+def generate_answer(query: str, context_chunks: list[str], model_name: str = "gemma4") -> str:
+    """
+    Sends the retrieved context and user query to the local LLM to generate an answer.
+    """
+    # Combine the retrieved chunks into a single string
+    context_text = "\n---\n".join(context_chunks)
+
+    # Construct the strict RAG prompt
+    prompt = f"""You are a helpful, precise assistant. Answer the user's question using ONLY the provided context. 
+If the answer is not contained in the context, say "I cannot answer this based on the provided documents." Do not use outside knowledge.
+
+Context:
+{context_text}
+
+Question:
+{query}
+
+Answer:"""
+
+    try:
+        # Call Ollama to generate the text
+        response = ollama.generate(model=model_name, prompt=prompt)
+        return response["response"]
+    except Exception as e:
+        print(f"Error generating answer: {e}")
+        return "Sorry, I encountered an error while generating the response."
