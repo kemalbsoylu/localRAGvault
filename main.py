@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from database import init_db, get_db_connection
 from utils import chunk_text, get_embedding
+from pydantic import BaseModel
 
 
 @asynccontextmanager
@@ -25,6 +26,13 @@ app = FastAPI(
 )
 
 
+# --- Request Schemas ---
+class SearchQuery(BaseModel):
+    query: str
+    top_k: int = 3  # Return the top 3 closest chunks by default
+
+
+# --- Endpoints ---
 @app.get("/")
 def health_check():
     return {"status": "success", "message": "localRAGvault API is running securely."}
@@ -67,4 +75,41 @@ async def upload_document(file: UploadFile = File(...)):
         "filename": file.filename,
         "chunks_processed": len(chunks),
         "chunks_saved": inserted_chunks
+    }
+
+
+@app.post("/search/")
+async def search_documents(search: SearchQuery):
+    # Embed the user's question
+    query_embedding = get_embedding(search.query, model_name="nomic-embed-text")
+
+    if not query_embedding:
+        raise HTTPException(status_code=500, detail="Failed to generate embedding for the query.")
+
+    results = []
+
+    # Search Postgres using Cosine Distance (<=>)
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            # 1 - distance gives us cosine similarity (1.0 is a perfect match)
+            cur.execute("""
+                        SELECT id, filename, content, 1 - (embedding <=> %s::vector) AS similarity
+                        FROM documents
+                        ORDER BY embedding <=> %s::vector
+                            LIMIT %s;
+                        """, (query_embedding, query_embedding, search.top_k))
+
+            rows = cur.fetchall()
+
+            for row in rows:
+                results.append({
+                    "id": row[0],
+                    "filename": row[1],
+                    "content": row[2],
+                    "similarity": round(row[3], 4)
+                })
+
+    return {
+        "query": search.query,
+        "results": results
     }
