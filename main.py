@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
-from database import init_db
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from database import init_db, get_db_connection
+from utils import chunk_text, get_embedding
 
 
 @asynccontextmanager
@@ -27,3 +28,43 @@ app = FastAPI(
 @app.get("/")
 def health_check():
     return {"status": "success", "message": "localRAGvault API is running securely."}
+
+
+@app.post("/upload/")
+async def upload_document(file: UploadFile = File(...)):
+    # Validate file type
+    if not file.filename.endswith(('.txt', '.md')):
+        raise HTTPException(status_code=400, detail="Only .txt and .md files are supported for now.")
+
+    # Read the content
+    content_bytes = await file.read()
+    try:
+        content_text = content_bytes.decode('utf-8')
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="File must be valid UTF-8 text.")
+
+    # Chunk the text
+    chunks = chunk_text(content_text, chunk_size=1000, overlap=200)
+
+    # Embed and Save to Database
+    inserted_chunks = 0
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            for chunk in chunks:
+                # Generate embedding using Ollama
+                embedding = get_embedding(chunk, model_name="nomic-embed-text")
+
+                if embedding:
+                    # Insert into pgvector database
+                    cur.execute("""
+                                INSERT INTO documents (filename, content, embedding)
+                                VALUES (%s, %s, %s)
+                                """, (file.filename, chunk, embedding))
+                    inserted_chunks += 1
+
+    return {
+        "status": "success",
+        "filename": file.filename,
+        "chunks_processed": len(chunks),
+        "chunks_saved": inserted_chunks
+    }
