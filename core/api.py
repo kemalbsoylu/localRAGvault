@@ -1,8 +1,9 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from database import init_db, get_db_connection
-from utils import chunk_text, get_embedding, generate_answer
 from pydantic import BaseModel
+
+from core.database import init_db, get_db_connection
+from core.utils import chunk_text, get_embedding, generate_answer
 
 
 @asynccontextmanager

@@ -15,3 +15,6 @@ wheels/
 # Environment variables
 .env
 
+# Ignore uploaded documents, but keep the directory
+uploads/*
+!uploads/.gitkeep
