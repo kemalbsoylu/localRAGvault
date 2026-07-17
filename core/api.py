@@ -42,7 +42,7 @@ def list_models():
 @app.post("/upload/")
 async def upload_document(
     file: UploadFile = File(...),
-    embedding_model: str = Form("nomic-embed-text")
+    embedding_model: str = Form("embeddinggemma")
 ):
     # Validate file type
     if not file.filename or not file.filename.endswith((".txt", ".md")):
@@ -153,15 +153,19 @@ async def ask_question(search: SearchQuery):
         return {"query": search.query, "answer": "No relevant documents found in the vault.", "sources": []}
 
     # Generate the answer using the selected generation model
-    final_answer = generate_answer(
+    llm_response = generate_answer(
         query=search.query,
         context_chunks=retrieved_chunks,
         model_name=search.generation_model
     )
 
+    if not llm_response["is_valid"]:
+        sources = []
+
     return {
         "query": search.query,
-        "answer": final_answer,
+        "answer": llm_response["text"],
         "generation_model": search.generation_model,
-        "sources": sources
+        "embedding_model": search.embedding_model,
+        "sources": sources,
     }

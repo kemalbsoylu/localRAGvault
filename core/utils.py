@@ -19,7 +19,7 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[st
     return chunks
 
 
-def get_embedding(text: str, model_name: str = "nomic-embed-text") -> list[float]:
+def get_embedding(text: str, model_name: str = "embeddinggemma") -> list[float]:
     """
     Generates a vector embedding for the given text using local Ollama.
     """
@@ -31,16 +31,21 @@ def get_embedding(text: str, model_name: str = "nomic-embed-text") -> list[float
         return []
 
 
-def generate_answer(query: str, context_chunks: list[str], model_name: str = "gemma3") -> str:
+def generate_answer(
+    query: str, context_chunks: list[str], model_name: str = "gemma3"
+) -> dict:
     """
-    Sends the retrieved context and user query to the local LLM to generate an answer.
+    Sends the retrieved context and user query to the local LLM.
+    Returns a dict with the text answer and a boolean indicating if a valid answer was found.
     """
     # Combine the retrieved chunks into a single string
     context_text = "\n---\n".join(context_chunks)
 
-    # Construct the strict RAG prompt
+    # Define the exact fallback string here as a single source of truth
+    fallback_msg = "I cannot answer this based on the provided documents."
+
     prompt = f"""You are a helpful, precise assistant. Answer the user's question using ONLY the provided context. 
-If the answer is not contained in the context, say "I cannot answer this based on the provided documents." Do not use outside knowledge.
+If the answer is not contained in the context, say exactly: "{fallback_msg}" Do not use outside knowledge.
 
 Context:
 {context_text}
@@ -53,10 +58,18 @@ Answer:"""
     try:
         # Call Ollama to generate the text
         response = ollama.generate(model=model_name, prompt=prompt)
-        return response["response"]
+        answer_text = response["response"].strip()
+
+        is_valid = fallback_msg not in answer_text
+
+        return {"text": answer_text, "is_valid": is_valid}
+
     except Exception as e:
         print(f"Error generating answer: {e}")
-        return "Sorry, I encountered an error while generating the response."
+        return {
+            "text": "Sorry, I encountered an internal error while generating the response.",
+            "is_valid": False,
+        }
 
 
 def get_available_models() -> dict:

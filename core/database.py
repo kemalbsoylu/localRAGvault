@@ -25,7 +25,6 @@ def init_db():
     """Initializes the database schema."""
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            # Using 768 dimensions (works for nomic and embeddinggemma via MRL)
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS documents (
                     id SERIAL PRIMARY KEY,
