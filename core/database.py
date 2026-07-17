@@ -31,6 +31,7 @@ def init_db():
                     id SERIAL PRIMARY KEY,
                     filename TEXT NOT NULL,
                     content TEXT NOT NULL,
+                    embedding_model TEXT NOT NULL,
                     embedding vector(768),
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );

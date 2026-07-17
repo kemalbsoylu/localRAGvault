@@ -31,7 +31,7 @@ def get_embedding(text: str, model_name: str = "nomic-embed-text") -> list[float
         return []
 
 
-def generate_answer(query: str, context_chunks: list[str], model_name: str = "gemma4") -> str:
+def generate_answer(query: str, context_chunks: list[str], model_name: str = "gemma3") -> str:
     """
     Sends the retrieved context and user query to the local LLM to generate an answer.
     """
@@ -57,3 +57,15 @@ Answer:"""
     except Exception as e:
         print(f"Error generating answer: {e}")
         return "Sorry, I encountered an error while generating the response."
+
+
+def get_available_models() -> dict:
+    """Fetches a list of installed models directly from local Ollama."""
+    try:
+        models_response = ollama.list()
+        # Extract just the model names from the response
+        model_names = [model["model"] for model in models_response["models"]]
+        return {"status": "success", "models": model_names}
+    except Exception as e:
+        print(f"Error fetching models: {e}")
+        return {"status": "error", "models": []}
