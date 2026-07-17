@@ -18,3 +18,12 @@ wheels/
 # Ignore uploaded documents, but keep the directory
 uploads/*
 !uploads/.gitkeep
+
+# Testing and Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Linter Caches
+.ruff_cache/

@@ -1,8 +1,8 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, HTTPException
-from pydantic import BaseModel
 
 from core.database import init_db, get_db_connection
+from core.schemas import SearchQuery
 from core.utils import chunk_text, get_embedding, generate_answer
 
 
@@ -27,12 +27,6 @@ app = FastAPI(
 )
 
 
-# --- Request Schemas ---
-class SearchQuery(BaseModel):
-    query: str
-    top_k: int = 3  # Return the top 3 closest chunks by default
-
-
 # --- Endpoints ---
 @app.get("/")
 def health_check():
@@ -42,13 +36,15 @@ def health_check():
 @app.post("/upload/")
 async def upload_document(file: UploadFile = File(...)):
     # Validate file type
-    if not file.filename.endswith(('.txt', '.md')):
-        raise HTTPException(status_code=400, detail="Only .txt and .md files are supported for now.")
+    if not file.filename or not file.filename.endswith((".txt", ".md")):
+        raise HTTPException(
+            status_code=400, detail="Only .txt and .md files are supported for now."
+        )
 
     # Read the content
     content_bytes = await file.read()
     try:
-        content_text = content_bytes.decode('utf-8')
+        content_text = content_bytes.decode("utf-8")
     except UnicodeDecodeError:
         raise HTTPException(status_code=400, detail="File must be valid UTF-8 text.")
 
@@ -148,7 +144,7 @@ async def ask_question(search: SearchQuery):
         return {"query": search.query, "answer": "No relevant documents found in the vault.", "sources": []}
 
     # Generate the final answer using gemma4
-    final_answer = generate_answer(query=search.query, context_chunks=retrieved_chunks, model_name="gemma4")
+    final_answer = generate_answer(query=search.query, context_chunks=retrieved_chunks, model_name="gemma3")
 
     # Return the full RAG package
     return {
