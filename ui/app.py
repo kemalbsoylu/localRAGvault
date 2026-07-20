@@ -36,15 +36,14 @@ generation_options = [m for m in available_models if "embed" not in m] or [
     DEFAULT_GENERATION_MODEL
 ]
 
-default_embed_idx = (
-    embedding_options.index(DEFAULT_EMBEDDING_MODEL)
-    if DEFAULT_EMBEDDING_MODEL in embedding_options
-    else 0
+default_embed_idx = next(
+    (i for i, m in enumerate(embedding_options) if m.startswith(DEFAULT_EMBEDDING_MODEL)),
+    0
 )
-default_gen_idx = (
-    generation_options.index(DEFAULT_GENERATION_MODEL)
-    if DEFAULT_GENERATION_MODEL in generation_options
-    else 0
+
+default_gen_idx = next(
+    (i for i, m in enumerate(generation_options) if m.startswith(DEFAULT_GENERATION_MODEL)),
+    0
 )
 
 # --- Sidebar ---

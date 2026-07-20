@@ -58,7 +58,7 @@ This project currently uses a split architecture for development. You will need 
 
 **1. Start the FastAPI Backend**
 ```bash
-uv run uvicorn core.api:app --reload
+uv run uvicorn core.api:app --reload --reload-dir core
 ```
 *The API will be available at `http://127.0.0.1:8000`. The database table initializes automatically on startup.*
 
