@@ -1,11 +1,22 @@
 import ollama
+from typing import List
+from core.config import (
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_GENERATION_MODEL,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_CHUNK_OVERLAP,
+)
+from core.schemas import LLMInternalResponse
+from core.logging_config import logger
 
 
-def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[str]:
-    """
-    Splits text into chunks of a specific size, with a defined overlap.
-    """
-    chunks = []
+def chunk_text(
+    text: str,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    overlap: int = DEFAULT_CHUNK_OVERLAP,
+) -> List[str]:
+    """Splits text into chunks of a specific size, with a defined overlap."""
+    chunks: List[str] = []
     start = 0
     text_length = len(text)
 
@@ -13,35 +24,26 @@ def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200) -> list[st
         end = start + chunk_size
         chunk = text[start:end]
         chunks.append(chunk)
-        # Move the start forward, but step back by the overlap amount
-        start += (chunk_size - overlap)
+        start += chunk_size - overlap
 
     return chunks
 
 
-def get_embedding(text: str, model_name: str = "embeddinggemma") -> list[float]:
-    """
-    Generates a vector embedding for the given text using local Ollama.
-    """
+def get_embedding(text: str, model_name: str = DEFAULT_EMBEDDING_MODEL) -> List[float]:
+    """Generates a vector embedding for the given text using local Ollama."""
     try:
         response = ollama.embeddings(model=model_name, prompt=text)
         return response["embedding"]
     except Exception as e:
-        print(f"Error generating embedding: {e}")
+        logger.error(f"Ollama vector embedding engine failure [{model_name}]: {e}")
         return []
 
 
 def generate_answer(
-    query: str, context_chunks: list[str], model_name: str = "gemma3"
-) -> dict:
-    """
-    Sends the retrieved context and user query to the local LLM.
-    Returns a dict with the text answer and a boolean indicating if a valid answer was found.
-    """
-    # Combine the retrieved chunks into a single string
+    query: str, context_chunks: List[str], model_name: str = DEFAULT_GENERATION_MODEL
+) -> LLMInternalResponse:
+    """Sends the retrieved context and user query to the local LLM using a strict validation gate."""
     context_text = "\n---\n".join(context_chunks)
-
-    # Define the exact fallback string here as a single source of truth
     fallback_msg = "I cannot answer this based on the provided documents."
 
     prompt = f"""You are a helpful, precise assistant. Answer the user's question using ONLY the provided context. 
@@ -56,29 +58,24 @@ Question:
 Answer:"""
 
     try:
-        # Call Ollama to generate the text
         response = ollama.generate(model=model_name, prompt=prompt)
         answer_text = response["response"].strip()
-
         is_valid = fallback_msg not in answer_text
 
-        return {"text": answer_text, "is_valid": is_valid}
-
+        return LLMInternalResponse(text=answer_text, is_valid=is_valid)
     except Exception as e:
-        print(f"Error generating answer: {e}")
-        return {
-            "text": "Sorry, I encountered an internal error while generating the response.",
-            "is_valid": False,
-        }
+        logger.error(f"Ollama LLM generations breakdown under [{model_name}]: {e}")
+        return LLMInternalResponse(
+            text="Sorry, I encountered an internal error while generating the response.",
+            is_valid=False,
+        )
 
 
-def get_available_models() -> dict:
+def get_available_models() -> List[str]:
     """Fetches a list of installed models directly from local Ollama."""
     try:
         models_response = ollama.list()
-        # Extract just the model names from the response
-        model_names = [model["model"] for model in models_response["models"]]
-        return {"status": "success", "models": model_names}
+        return [model["model"] for model in models_response["models"]]
     except Exception as e:
-        print(f"Error fetching models: {e}")
-        return {"status": "error", "models": []}
+        logger.error(f"Failed to fetch model catalog from local Ollama service: {e}")
+        return []

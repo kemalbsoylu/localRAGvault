@@ -27,3 +27,7 @@ coverage.xml
 
 # Linter Caches
 .ruff_cache/
+
+# Local logs
+logs/
+*.log

@@ -1,42 +1,46 @@
-import os
 import psycopg
 from pgvector.psycopg import register_vector
-from dotenv import load_dotenv
+from core.config import DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
+from core.logging_config import logger
 
-# Load environment variables from the .env file
-load_dotenv()
 
-def get_db_connection():
+def get_db_connection() -> psycopg.Connection:
     """Establishes a connection to the database and registers the vector type."""
-    # Pulling credentials securely from the environment
-    conn = psycopg.connect(
-        dbname=os.getenv("DB_NAME", "localragvault"),
-        user=os.getenv("DB_USER", "postgres"),
-        password=os.getenv("DB_PASSWORD", ""),
-        host=os.getenv("DB_HOST", "localhost"),
-        port=os.getenv("DB_PORT", "5432"),
-        autocommit=True
-    )
-    # Register pgvector so psycopg knows how to handle vector types
-    register_vector(conn)
-    return conn
+    try:
+        conn = psycopg.connect(
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            host=DB_HOST,
+            port=DB_PORT,
+            autocommit=True
+        )
+        register_vector(conn)
+        return conn
+    except Exception as e:
+        logger.error(f"Failed to connect to the database engine: {e}")
+        raise
 
-def init_db():
-    """Initializes the database schema."""
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS documents (
-                    id SERIAL PRIMARY KEY,
-                    filename TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    embedding_model TEXT NOT NULL,
-                    embedding vector(768),
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            print("Database initialized successfully. 'documents' table is ready.")
+
+def init_db() -> None:
+    """Initializes the database schema if not present."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS documents (
+                        id SERIAL PRIMARY KEY,
+                        filename TEXT NOT NULL,
+                        content TEXT NOT NULL,
+                        embedding_model TEXT NOT NULL,
+                        embedding vector, -- Dynamic size vector space mapping
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+        logger.info("Database initialized successfully. 'documents' table is ready.")
+    except Exception as e:
+        logger.error(f"Critical error during database schema creation: {e}")
+        raise
 
 if __name__ == "__main__":
-    # Test the connection and create the table
     init_db()
