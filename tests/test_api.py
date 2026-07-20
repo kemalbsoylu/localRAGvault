@@ -78,26 +78,38 @@ def test_search_documents_response_contract() -> None:
 @patch("core.api.generate_answer")
 def test_ask_question_with_valid_context(mock_generate) -> None:
     """Test full pipeline loop under mocked conditions returning successful answers."""
+    # 1. Upload dummy data to populate the isolated vector DB first
+    file_content = b"localRAGvault is a privacy-first, fully local RAG architecture."
+    client.post("/upload/", files={"file": ("test_doc.txt", file_content, "text/plain")})
+
+    # 2. Mock the LLM generation
     mock_generate.return_value = LLMInternalResponse(
         text="This is a mocked LLM answer for testing.", is_valid=True
     )
 
+    # 3. Test the /ask/ endpoint
     data = {"query": "What is localRAGvault?", "top_k": 2}
     response = client.post("/ask/", json=data)
 
     assert response.status_code == 200
     result = response.json()
     assert result["answer"] == "This is a mocked LLM answer for testing."
-    assert isinstance(result["sources"], list)
+    assert len(result["sources"]) > 0
 
 
 @patch("core.api.generate_answer")
 def test_ask_question_hides_sources_on_invalid_context(mock_generate) -> None:
     """Verify that sources are wiped from the output package if the LLM cannot answer."""
+    # 1. Upload dummy data so the database actually returns context chunks
+    file_content = b"Some unrelated context about apples and oranges."
+    client.post("/upload/", files={"file": ("unrelated.txt", file_content, "text/plain")})
+
+    # 2. Mock the LLM returning the failure string
     mock_generate.return_value = LLMInternalResponse(
         text="I cannot answer this based on the provided documents.", is_valid=False
     )
 
+    # 3. Ask a question
     data = {"query": "Random query that doesn't exist", "top_k": 1}
     response = client.post("/ask/", json=data)
 

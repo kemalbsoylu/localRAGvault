@@ -32,4 +32,9 @@ DEFAULT_CHUNK_OVERLAP = 200
 # Logging Setup
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
-LOG_FILE = LOG_DIR / "localragvault.log"
+
+if os.getenv("DB_NAME") == "localragvault_test":
+    LOG_FILE = LOG_DIR / "test_localragvault.log"
+else:
+    LOG_FILE = LOG_DIR / "localragvault.log"
+

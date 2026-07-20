@@ -42,7 +42,7 @@ Before running this project, ensure your local environment meets the following r
    uv sync
    ```
 
-3. Configure your environment variables:
+3. Configure your environment variables.
    Create a `.env` file in the root directory and add your Postgres credentials:
    ```env
    DB_NAME=localragvault
@@ -63,6 +63,7 @@ uv run uvicorn core.api:app --reload
 *The API will be available at `http://127.0.0.1:8000`. The database table initializes automatically on startup.*
 
 **2. Start the Streamlit Frontend**
+
 Open a new terminal window and run:
 ```bash
 uv run streamlit run ui/app.py
