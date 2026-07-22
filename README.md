@@ -5,10 +5,12 @@ This tool allows you to securely ingest documents and query them locally using o
 
 ## Features
 * **100% Local Execution:** Zero data leaves your machine. Powered by Ollama.
-* **Dynamic Model Steering:** Switch between embedding and generation models on the fly directly from the UI.
-* **Vector Separation:** Safely stores multiple embedding spaces in the same Postgres table without vector pollution.
-* **Stateless Search UI:** A clean interface that mimics a private search engine, complete with expandable citations and UI-locked processing.
-* **Robust Backend Architecture:** Built with FastAPI, Pydantic typing, centralized configuration, and rotating file logging.
+* **Isolated Workspaces:** Group your documents into distinct workspaces. Each workspace permanently locks to a specific embedding model and vector dimension upon creation.
+* **Vector Dimension Safeguards:** Strict backend validation prevents "Vector Pollution" by rejecting model mismatches, ensuring your `pgvector` database never crashes from dimension collisions.
+* **Physical File Storage:** Maintains a mirrored physical copy of your ingested documents on disk, logically separated by workspace ID.
+* **Dynamic Model Steering:** Switch text generation models on the fly directly from the UI, while keeping your isolated vector search strictly locked to the workspace's embedding model.
+* **Zero-Touch Startup:** Automatically probes the local environment and pulls missing default Ollama models during the API boot sequence.
+* **Robust Backend Architecture:** Built with FastAPI, strictly normalized Pydantic schemas, centralized configuration, and rotating file telemetry logs.
 * **Advanced Vector DB:** Fast, reliable, and scalable vector similarity search powered by PostgreSQL and `pgvector`.
 
 ## Tech Stack
@@ -72,7 +74,7 @@ This project currently uses a split architecture for development. You will need 
 ```bash
 uv run uvicorn core.api:app --reload --reload-dir core
 ```
-*The API will be available at `http://127.0.0.1:8000`. The database table initializes automatically on startup.*
+*The API will be available at `http://127.0.0.1:8000`. The normalized database schema and default models initialize automatically on startup.*
 
 **2. Start the Streamlit Frontend**
 
@@ -91,9 +93,9 @@ Once the backend is running, you can explore and test the API directly in your b
 
 ## Project Structure
 * `core/`: FastAPI application, Pydantic schemas, DB connections, configs, and utilities.
-* `ui/`: Streamlit frontend prototype.
-* `tests/`: Pytest suite covering endpoints, data contracts, and LLM behavior.
-* `uploads/`: Local storage for ingested documents.
+* `ui/`: Streamlit frontend prototype featuring workspace management.
+* `tests/`: Pytest suite covering endpoints, isolated data contracts, and LLM behavior.
+* `uploads/`: Local physical storage for ingested documents, organized internally by workspace IDs.
 * `logs/`: System diagnostic and telemetry logs (auto-generated).
 
 ## Code Quality & Testing
@@ -114,7 +116,7 @@ uv run ty check
 
 ### 2. Running Unit & Integration Tests
 
-Run the standard test suite with coverage (uses mocks to bypass LLM generation for instant feedback):
+Run the standard test suite with coverage (uses mocks to bypass LLM generation for instant feedback and spins up an isolated `localragvault_test` database):
 ```bash
 uv run pytest -m "not integration" --cov=core --cov-report=term-missing
 ```
