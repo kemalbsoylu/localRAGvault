@@ -61,7 +61,7 @@ with st.sidebar:
     )
 
     st.markdown("---")
-    st.header("1. Add to Vault")
+    st.header("Add to Vault")
     uploaded_file = st.file_uploader("Upload a .txt or .md file", type=["txt", "md"])
 
     if st.button("Ingest Document"):
@@ -83,8 +83,31 @@ with st.sidebar:
         else:
             st.warning("Please select a file first.")
 
+    st.markdown("---")
+    st.header("📂 Vault Inventory")
+
+    if st.button("Refresh Inventory"):
+        st.rerun()
+
+    try:
+        # Fetching the 'default' workspace
+        inv_res = requests.get(f"{API_URL}/inventory/default")
+        if inv_res.status_code == 200:
+            inventory = inv_res.json().get("documents", [])
+            if inventory:
+                for doc in inventory:
+                    with st.expander(f"📄 {doc['filename']}"):
+                        st.caption(f"**Path:** `{doc['file_path']}`")
+                        st.caption(f"**Total Chunks:** {doc['total_chunks']}")
+            else:
+                st.info("Your vault is currently empty.")
+        else:
+            st.error("Failed to load inventory.")
+    except requests.exceptions.ConnectionError:
+        st.error("Backend is unreachable.")
+
 # --- Main Search Window ---
-st.header("2. Search your Vault")
+st.header("Search your Vault")
 
 if "search_history" not in st.session_state:
     st.session_state.search_history = []

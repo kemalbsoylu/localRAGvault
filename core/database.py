@@ -32,9 +32,10 @@ def init_db() -> None:
                     CREATE TABLE IF NOT EXISTS documents (
                         id SERIAL PRIMARY KEY,
                         filename TEXT NOT NULL,
+                        file_path TEXT NOT NULL,
                         content TEXT NOT NULL,
                         embedding_model TEXT NOT NULL,
-                        embedding vector, -- Dynamic size vector space mapping
+                        embedding vector,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """)

@@ -3,10 +3,11 @@ from typing import AsyncGenerator, List
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
-from core.config import DEFAULT_EMBEDDING_MODEL
+from core.config import DEFAULT_EMBEDDING_MODEL, UPLOAD_DIR
 from core.database import get_db_connection, init_db
 from core.logging_config import logger
 from core.schemas import (
+    DocumentInventoryItem,
     DocumentSource,
     IngestionResponse,
     ModelListResponse,
@@ -14,6 +15,7 @@ from core.schemas import (
     SearchQuery,
     SearchResultCard,
     VectorSearchResponse,
+    WorkspaceInventoryResponse,
 )
 from core.utils import (
     chunk_text,
@@ -58,6 +60,31 @@ def list_models() -> ModelListResponse:
     return ModelListResponse(status=status, models=models)
 
 
+@app.get("/inventory/{workspace_id}", response_model=WorkspaceInventoryResponse)
+def get_workspace_inventory(workspace_id: str) -> WorkspaceInventoryResponse:
+    """Returns a list of physical files currently indexed for a given workspace."""
+    inventory: List[DocumentInventoryItem] = []
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            # Group by physical file to see how many chunks each file produced
+            cur.execute(
+                """
+                SELECT filename, file_path, COUNT(*) as total_chunks
+                FROM documents
+                GROUP BY filename, file_path
+                ORDER BY filename ASC;
+                """
+            )
+            rows = cur.fetchall()
+            for row in rows:
+                inventory.append(
+                    DocumentInventoryItem(filename=row[0], file_path=row[1], total_chunks=row[2])
+                )
+
+    return WorkspaceInventoryResponse(workspace_id=workspace_id, documents=inventory)
+
+
 @app.post("/upload/", response_model=IngestionResponse)
 async def upload_document(
     file: UploadFile = File(...), embedding_model: str = Form(DEFAULT_EMBEDDING_MODEL)
@@ -70,7 +97,21 @@ async def upload_document(
 
     embedding_model = normalize_model_name(embedding_model)
 
+    # Hardcode workspace ID until workspaces are implemented
+    workspace_id = "default"
+    workspace_dir = UPLOAD_DIR / workspace_id
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+
+    physical_file_path = workspace_dir / file.filename
+
     content_bytes = await file.read()
+
+    # Save the raw bytes to the disk
+    with open(physical_file_path, "wb") as f:
+        f.write(content_bytes)
+
+    logger.info(f"Physical file saved to disk: {physical_file_path}")
+
     try:
         content_text = content_bytes.decode("utf-8")
     except UnicodeDecodeError as err:
@@ -88,10 +129,10 @@ async def upload_document(
                 if embedding:
                     cur.execute(
                         """
-                        INSERT INTO documents (filename, content, embedding_model, embedding)
-                        VALUES (%s, %s, %s, %s)
-                    """,
-                        (file.filename, chunk, embedding_model, embedding),
+                        INSERT INTO documents (filename, file_path, content, embedding_model, embedding)
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                        (file.filename, str(physical_file_path), chunk, embedding_model, embedding),
                     )
                     inserted_chunks += 1
 

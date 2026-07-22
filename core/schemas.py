@@ -64,3 +64,13 @@ class ModelListResponse(BaseModel):
 class LLMInternalResponse(BaseModel):
     text: str
     is_valid: bool
+
+
+class DocumentInventoryItem(BaseModel):
+    filename: str
+    file_path: str
+    total_chunks: int
+
+class WorkspaceInventoryResponse(BaseModel):
+    workspace_id: str
+    documents: List[DocumentInventoryItem]
