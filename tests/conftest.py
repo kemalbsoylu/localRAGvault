@@ -57,16 +57,8 @@ def setup_test_database():
                     )
         conn_test.close()
 
-        # 3. Initialize our application tables
+        # 3. Initialize application tables
         init_db()
-
-        # Ensures test database handles schema additions if table already existed before
-        with get_db_connection() as conn_mig:
-            with conn_mig.cursor() as cur_mig:
-                cur_mig.execute("""
-                    ALTER TABLE documents 
-                    ADD COLUMN IF NOT EXISTS file_path TEXT NOT NULL DEFAULT '';
-                """)
 
     except Exception as e:
         pytest.exit(f"Critical failure provisioning the test database: {e}")
@@ -80,10 +72,10 @@ def clean_database():
     """
     yield
 
-    # After the test finishes, wipe the table completely clean
+    # After the test finishes, wipe both tables completely clean
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("TRUNCATE TABLE documents RESTART IDENTITY;")
+            cur.execute("TRUNCATE TABLE workspaces, documents RESTART IDENTITY CASCADE;")
 
 
 @pytest.fixture(scope="session", autouse=True)
