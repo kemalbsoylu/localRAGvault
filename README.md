@@ -29,6 +29,18 @@ Before running this project, ensure your local environment meets the following r
 3.  **uv** (v0.11.6+)
     * Used for Python dependency management.
 
+> **Caution Regarding Ollama Cloud Models:**
+> 
+> This application is built local-first to guarantee strict document privacy. While Ollama allows using cloud hosted
+> open models (e.g., aliases ending in `:cloud`), selecting a cloud model will proxy your prompt and document context to remote servers. 
+> 
+> If you explicitly choose to use Ollama Cloud models, you must first authenticate your local daemon by running `ollama signin` in your terminal:
+> ```bash
+> ollama signin
+> ollama pull gemma4:cloud
+> ```
+> For guaranteed zero-data-leak privacy, stick to fully local downloaded models for both embedding and generation.
+
 ## Installation & Setup
 
 1. Clone the repository and navigate to the directory:

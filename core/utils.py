@@ -63,10 +63,41 @@ Answer:"""
         is_valid = fallback_msg not in answer_text
 
         return LLMInternalResponse(text=answer_text, is_valid=is_valid)
+
+    except ollama.ResponseError as e:
+        logger.error(
+            f"Ollama API ResponseError under [{model_name}] (status code: {e.status_code}): {e.error}"
+        )
+
+        if e.status_code == 400:
+            friendly_msg = f"Bad request (status code: 400): Invalid parameters or model payload for '{model_name}'."
+        elif e.status_code == 401:
+            friendly_msg = "Authentication required (status code: 401). Run 'ollama signin' in your terminal."
+        elif e.status_code == 403:
+            friendly_msg = f"Subscription required for model '{model_name}' (status code: 403). Upgrade access at https://ollama.com/upgrade"
+        elif e.status_code == 404:
+            friendly_msg = f"Model '{model_name}' not found (status code: 404). Run 'ollama pull {model_name}' first."
+        elif e.status_code == 410:
+            friendly_msg = (
+                f"Model '{model_name}' has been retired by its provider (status code: 410)."
+            )
+        elif e.status_code == 429:
+            friendly_msg = (
+                "Too many requests (status code: 429). Rate limit exceeded on Ollama Cloud."
+            )
+        elif e.status_code == 500:
+            friendly_msg = f"Internal server error (status code: 500): The local engine process crashed while running model '{model_name}'."
+        elif e.status_code == 502:
+            friendly_msg = f"Bad gateway (status code: 502): Could not reach cloud model endpoints for '{model_name}'."
+        else:
+            friendly_msg = f"Ollama service error (status code: {e.status_code}): {e.error}"
+
+        return LLMInternalResponse(text=friendly_msg, is_valid=False)
+
     except Exception as e:
-        logger.error(f"Ollama LLM generations breakdown under [{model_name}]: {e}")
+        logger.error(f"Unexpected execution error under [{model_name}]: {e}")
         return LLMInternalResponse(
-            text="Sorry, I encountered an internal error while generating the response.",
+            text="Connection to local Ollama daemon failed. Ensure the Ollama service is running locally.",
             is_valid=False,
         )
 
