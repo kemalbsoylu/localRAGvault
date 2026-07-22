@@ -1,13 +1,15 @@
-import ollama
 from typing import List
+
+import ollama
+
 from core.config import (
+    DEFAULT_CHUNK_OVERLAP,
+    DEFAULT_CHUNK_SIZE,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_GENERATION_MODEL,
-    DEFAULT_CHUNK_SIZE,
-    DEFAULT_CHUNK_OVERLAP,
 )
-from core.schemas import LLMInternalResponse
 from core.logging_config import logger
+from core.schemas import LLMInternalResponse
 
 
 def chunk_text(
@@ -72,7 +74,9 @@ Answer:"""
         if e.status_code == 400:
             friendly_msg = f"Bad request (status code: 400): Invalid parameters or model payload for '{model_name}'."
         elif e.status_code == 401:
-            friendly_msg = "Authentication required (status code: 401). Run 'ollama signin' in your terminal."
+            friendly_msg = (
+                "Authentication required (status code: 401). Run 'ollama signin' in your terminal."
+            )
         elif e.status_code == 403:
             friendly_msg = f"Subscription required for model '{model_name}' (status code: 403). Upgrade access at https://ollama.com/upgrade"
         elif e.status_code == 404:

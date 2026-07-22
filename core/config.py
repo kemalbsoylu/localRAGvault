@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
-from dotenv import load_dotenv
 
+from dotenv import load_dotenv
 
 # Base Directory Resolution
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -37,4 +37,3 @@ if os.getenv("DB_NAME") == "localragvault_test":
     LOG_FILE = LOG_DIR / "test_localragvault.log"
 else:
     LOG_FILE = LOG_DIR / "localragvault.log"
-

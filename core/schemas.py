@@ -1,13 +1,19 @@
-from pydantic import BaseModel, Field
 from typing import List
+
+from pydantic import BaseModel, Field
+
 from core.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_GENERATION_MODEL
 
 
 class SearchQuery(BaseModel):
     query: str = Field(..., description="The query string used for matching.")
     top_k: int = Field(default=3, ge=1, le=20, description="Number of context chunks to pull.")
-    embedding_model: str = Field(default=DEFAULT_EMBEDDING_MODEL, description="Target vector space model.")
-    generation_model: str = Field(default=DEFAULT_GENERATION_MODEL, description="Target text generation model.")
+    embedding_model: str = Field(
+        default=DEFAULT_EMBEDDING_MODEL, description="Target vector space model."
+    )
+    generation_model: str = Field(
+        default=DEFAULT_GENERATION_MODEL, description="Target text generation model."
+    )
 
 
 class DocumentSource(BaseModel):

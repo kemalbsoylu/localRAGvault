@@ -1,6 +1,7 @@
 import psycopg
 from pgvector.psycopg import register_vector
-from core.config import DB_NAME, DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
+
+from core.config import DB_HOST, DB_NAME, DB_PASSWORD, DB_PORT, DB_USER
 from core.logging_config import logger
 
 
@@ -13,7 +14,7 @@ def get_db_connection() -> psycopg.Connection:
             password=DB_PASSWORD,
             host=DB_HOST,
             port=DB_PORT,
-            autocommit=True
+            autocommit=True,
         )
         register_vector(conn)
         return conn
@@ -41,6 +42,7 @@ def init_db() -> None:
     except Exception as e:
         logger.error(f"Critical error during database schema creation: {e}")
         raise
+
 
 if __name__ == "__main__":
     init_db()

@@ -1,20 +1,21 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, UploadFile, File, HTTPException, Form
 from typing import AsyncGenerator, List
 
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+
 from core.config import DEFAULT_EMBEDDING_MODEL
-from core.database import init_db, get_db_connection
+from core.database import get_db_connection, init_db
+from core.logging_config import logger
 from core.schemas import (
-    SearchQuery,
-    VectorSearchResponse,
-    RAGQueryResponse,
+    DocumentSource,
     IngestionResponse,
     ModelListResponse,
+    RAGQueryResponse,
+    SearchQuery,
     SearchResultCard,
-    DocumentSource
+    VectorSearchResponse,
 )
-from core.utils import chunk_text, get_embedding, generate_answer, get_available_models
-from core.logging_config import logger
+from core.utils import chunk_text, generate_answer, get_available_models, get_embedding
 
 
 @asynccontextmanager
@@ -29,7 +30,7 @@ app = FastAPI(
     title="localRAGvault API",
     description="Local RAG pipeline backend powered by FastAPI, Ollama, and pgvector.",
     version="0.1.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 
@@ -48,19 +49,20 @@ def list_models() -> ModelListResponse:
 
 @app.post("/upload/", response_model=IngestionResponse)
 async def upload_document(
-    file: UploadFile = File(...),
-    embedding_model: str = Form(DEFAULT_EMBEDDING_MODEL)
+    file: UploadFile = File(...), embedding_model: str = Form(DEFAULT_EMBEDDING_MODEL)
 ) -> IngestionResponse:
     if not file.filename or not file.filename.endswith((".txt", ".md")):
         logger.warning(f"Rejected malicious or invalid file upload attempt: {file.filename}")
-        raise HTTPException(status_code=400, detail="Only .txt and .md files are supported for now.")
+        raise HTTPException(
+            status_code=400, detail="Only .txt and .md files are supported for now."
+        )
 
     content_bytes = await file.read()
     try:
         content_text = content_bytes.decode("utf-8")
-    except UnicodeDecodeError:
+    except UnicodeDecodeError as err:
         logger.error(f"Encoding conversion breakdown during reading: {file.filename}")
-        raise HTTPException(status_code=400, detail="File must be valid UTF-8 text.")
+        raise HTTPException(status_code=400, detail="File must be valid UTF-8 text.") from err
 
     chunks = chunk_text(content_text)
     logger.info(f"Processing '{file.filename}' -> generated {len(chunks)} text blocks.")
@@ -71,10 +73,13 @@ async def upload_document(
             for chunk in chunks:
                 embedding = get_embedding(chunk, model_name=embedding_model)
                 if embedding:
-                    cur.execute("""
+                    cur.execute(
+                        """
                         INSERT INTO documents (filename, content, embedding_model, embedding)
                         VALUES (%s, %s, %s, %s)
-                    """, (file.filename, chunk, embedding_model, embedding))
+                    """,
+                        (file.filename, chunk, embedding_model, embedding),
+                    )
                     inserted_chunks += 1
 
     logger.info(f"Successfully processed ingestion: {inserted_chunks}/{len(chunks)} chunks saved.")
@@ -82,7 +87,7 @@ async def upload_document(
         status="success",
         filename=file.filename,
         model_used=embedding_model,
-        chunks_saved=inserted_chunks
+        chunks_saved=inserted_chunks,
     )
 
 
@@ -96,27 +101,35 @@ async def search_documents(search: SearchQuery) -> VectorSearchResponse:
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT id, filename, content, 1 - (embedding <=> %s::vector) AS similarity
                 FROM documents
                 WHERE embedding_model = %s
                 ORDER BY embedding <=> %s::vector
                 LIMIT %s;
-            """, (query_embedding, search.embedding_model, query_embedding, search.top_k))
+            """,
+                (
+                    query_embedding,
+                    search.embedding_model,
+                    query_embedding,
+                    search.top_k,
+                ),
+            )
 
             rows = cur.fetchall()
             for row in rows:
-                results.append(SearchResultCard(
-                    id=row[0],
-                    filename=row[1],
-                    content=row[2],
-                    similarity=round(row[3], 4)
-                ))
+                results.append(
+                    SearchResultCard(
+                        id=row[0],
+                        filename=row[1],
+                        content=row[2],
+                        similarity=round(row[3], 4),
+                    )
+                )
 
     return VectorSearchResponse(
-        query=search.query,
-        embedding_model=search.embedding_model,
-        results=results
+        query=search.query, embedding_model=search.embedding_model, results=results
     )
 
 
@@ -132,13 +145,21 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 SELECT filename, content, 1 - (embedding <=> %s::vector) AS similarity
                 FROM documents
                 WHERE embedding_model = %s
                 ORDER BY embedding <=> %s::vector
                 LIMIT %s;
-            """, (query_embedding, search.embedding_model, query_embedding, search.top_k))
+            """,
+                (
+                    query_embedding,
+                    search.embedding_model,
+                    query_embedding,
+                    search.top_k,
+                ),
+            )
 
             rows = cur.fetchall()
             for row in rows:
@@ -153,13 +174,13 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
             answer="No relevant documents found in the vault.",
             generation_model=search.generation_model,
             embedding_model=search.embedding_model,
-            sources=[]
+            sources=[],
         )
 
     llm_response = generate_answer(
         query=search.query,
         context_chunks=retrieved_chunks,
-        model_name=search.generation_model
+        model_name=search.generation_model,
     )
 
     if not llm_response.is_valid:
@@ -171,5 +192,5 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
         answer=llm_response.text,
         generation_model=search.generation_model,
         embedding_model=search.embedding_model,
-        sources=sources
+        sources=sources,
     )

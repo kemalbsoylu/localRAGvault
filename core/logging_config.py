@@ -1,6 +1,7 @@
 import logging
 import sys
 from logging.handlers import RotatingFileHandler
+
 from core.config import LOG_FILE
 
 
@@ -20,9 +21,7 @@ def setup_logger() -> logging.Logger:
     )
 
     # Rotating File Handler (Max 5MB per file, keeping 3 backups)
-    file_handler = RotatingFileHandler(
-        LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3
-    )
+    file_handler = RotatingFileHandler(LOG_FILE, maxBytes=5 * 1024 * 1024, backupCount=3)
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 

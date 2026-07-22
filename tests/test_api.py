@@ -1,6 +1,8 @@
+from unittest.mock import patch
+
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch
+
 from core.api import app
 from core.schemas import LLMInternalResponse
 
@@ -29,7 +31,9 @@ def test_list_models_endpoint() -> None:
 
 def test_upload_document_success() -> None:
     """Test successful upload, parsing, chunking, and db serialization of valid text."""
-    file_content = b"This is a test document for localRAGvault tracking. It verifies text parsing loops."
+    file_content = (
+        b"This is a test document for localRAGvault tracking. It verifies text parsing loops."
+    )
     files = {"file": ("test_doc.txt", file_content, "text/plain")}
 
     response = client.post("/upload/", files=files)
@@ -139,6 +143,10 @@ def test_ask_question_real_model() -> None:
     result = response.json()
 
     # 4. Verify the LLM actually generated a response using the document
-    assert "local" in result["answer"].lower() or "privacy" in result["answer"].lower() or "ollama" in result["answer"].lower()
+    assert (
+        "local" in result["answer"].lower()
+        or "privacy" in result["answer"].lower()
+        or "ollama" in result["answer"].lower()
+    )
     assert len(result["sources"]) > 0
     assert result["sources"][0]["filename"] == "integration_doc.txt"

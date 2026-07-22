@@ -1,11 +1,12 @@
 import os
-import pytest
+
 import psycopg
+import pytest
 
 # OVERRIDE THE DATABASE NAME GLOBALLY
 os.environ["DB_NAME"] = "localragvault_test"
 
-from core.config import DB_USER, DB_PASSWORD, DB_HOST, DB_PORT
+from core.config import DB_HOST, DB_PASSWORD, DB_PORT, DB_USER
 from core.database import get_db_connection, init_db
 
 
@@ -18,7 +19,12 @@ def setup_test_database():
     try:
         # 1. Connect to default db to create the test database
         conn = psycopg.connect(
-            dbname="postgres", user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT, autocommit=True
+            dbname="postgres",
+            user=DB_USER,
+            password=DB_PASSWORD,
+            host=DB_HOST,
+            port=DB_PORT,
+            autocommit=True,
         )
         with conn.cursor() as cur:
             cur.execute("SELECT 1 FROM pg_database WHERE datname = 'localragvault_test'")
@@ -29,7 +35,12 @@ def setup_test_database():
 
         # 2. Connect to the test database to check/add the vector extension
         conn_test = psycopg.connect(
-            dbname="localragvault_test", user=DB_USER, password=DB_PASSWORD, host=DB_HOST, port=DB_PORT, autocommit=True
+            dbname="localragvault_test",
+            user=DB_USER,
+            password=DB_PASSWORD,
+            host=DB_HOST,
+            port=DB_PORT,
+            autocommit=True,
         )
         with conn_test.cursor() as cur:
             # Query the system catalog to see if 'vector' is already installed
@@ -41,7 +52,7 @@ def setup_test_database():
                     pytest.exit(
                         "\n❌ Missing superuser permissions to install pgvector.\n"
                         "Run this command in your terminal once to fix it:\n"
-                        "sudo -u postgres psql -d localragvault_test -c \"CREATE EXTENSION vector;\""
+                        'sudo -u postgres psql -d localragvault_test -c "CREATE EXTENSION vector;"'
                     )
         conn_test.close()
 

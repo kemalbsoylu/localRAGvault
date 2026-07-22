@@ -3,10 +3,10 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-import streamlit as st
 import requests
-from core.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_GENERATION_MODEL
+import streamlit as st
 
+from core.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_GENERATION_MODEL
 
 API_URL = "http://127.0.0.1:8000"
 
@@ -29,21 +29,17 @@ def fetch_available_models():
 available_models = fetch_available_models()
 
 # Sort available options dynamically
-embedding_options = [m for m in available_models if "embed" in m] or [
-    DEFAULT_EMBEDDING_MODEL
-]
-generation_options = [m for m in available_models if "embed" not in m] or [
-    DEFAULT_GENERATION_MODEL
-]
+embedding_options = [m for m in available_models if "embed" in m] or [DEFAULT_EMBEDDING_MODEL]
+generation_options = [m for m in available_models if "embed" not in m] or [DEFAULT_GENERATION_MODEL]
 
 default_embed_idx = next(
     (i for i, m in enumerate(embedding_options) if m.startswith(DEFAULT_EMBEDDING_MODEL)),
-    0
+    0,
 )
 
 default_gen_idx = next(
     (i for i, m in enumerate(generation_options) if m.startswith(DEFAULT_GENERATION_MODEL)),
-    0
+    0,
 )
 
 # --- Sidebar ---
@@ -71,9 +67,7 @@ with st.sidebar:
     if st.button("Ingest Document"):
         if uploaded_file is not None:
             with st.spinner("Chunking and embedding document..."):
-                files = {
-                    "file": (uploaded_file.name, uploaded_file.getvalue(), "text/plain")
-                }
+                files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "text/plain")}
                 data = {"embedding_model": selected_embed_model}
                 try:
                     res = requests.post(f"{API_URL}/upload/", files=files, data=data)

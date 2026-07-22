@@ -25,3 +25,13 @@ pythonpath = ["."]
 markers = [
     "integration: marks tests that require a real local LLM (deselect with '-m \"not integration\"')"
 ]
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+exclude = ["uploads", "logs"]
+
+[tool.ruff.lint]
+# E: pycodestyle errors, F: Pyflakes, I: isort, B: bugbear
+select = ["E", "F", "I", "B"]
+# B008 is required for FastAPI's File(...) and Form(...) syntax
+ignore = ["B008", "E501"]

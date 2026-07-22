@@ -96,7 +96,23 @@ Once the backend is running, you can explore and test the API directly in your b
 * `uploads/`: Local storage for ingested documents.
 * `logs/`: System diagnostic and telemetry logs (auto-generated).
 
-## Testing
+## Code Quality & Testing
+
+### 1. Code Quality & Type Checking
+Run linting, formatting, and static type checking:
+
+```bash
+# Check for lint issues and automatically fix safe violations
+uv run ruff check --fix
+
+# Auto-format all Python code
+uv run ruff format
+
+# Run static type checking
+uv run ty check
+```
+
+### 2. Running Unit & Integration Tests
 
 Run the standard test suite with coverage (uses mocks to bypass LLM generation for instant feedback):
 ```bash
@@ -106,6 +122,12 @@ uv run pytest -m "not integration" --cov=core --cov-report=term-missing
 Run the full integration suite (tests against your actual running local Ollama models):
 ```bash
 uv run pytest -m integration
+```
+
+### 3. Full Quality Suite
+To verify linting, formatting, type safety, and unit tests all at once before committing:
+```bash
+uv run ruff check && uv run ruff format --check && uv run ty check && uv run pytest
 ```
 
 ## License
