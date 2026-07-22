@@ -109,8 +109,8 @@ Answer:"""
 def get_available_models() -> List[str]:
     """Fetches a list of installed models directly from local Ollama."""
     try:
-        models_response = ollama.list()
-        return [model["model"] for model in models_response["models"]]
+        response = ollama.list()
+        return [m.model for m in response.models if m.model is not None]
     except Exception as e:
         logger.error(f"Failed to fetch model catalog from local Ollama service: {e}")
         return []
