@@ -48,10 +48,7 @@ def init_db() -> None:
 
 
 def insert_document_chunks(
-    filename: str, 
-    file_path: str, 
-    embedding_model: str, 
-    chunk_data: List[Tuple[str, List[float]]]
+    filename: str, file_path: str, embedding_model: str, chunk_data: List[Tuple[str, List[float]]]
 ) -> int:
     """Bulk inserts text chunks and their corresponding vector embeddings."""
     inserted_chunks = 0
@@ -86,11 +83,7 @@ def fetch_workspace_inventory(workspace_id: str) -> List[dict]:
             )
             rows = cur.fetchall()
             for row in rows:
-                inventory.append({
-                    "filename": row[0],
-                    "file_path": row[1],
-                    "total_chunks": row[2]
-                })
+                inventory.append({"filename": row[0], "file_path": row[1], "total_chunks": row[2]})
     return inventory
 
 
@@ -111,12 +104,9 @@ def search_vector_db(query_embedding: List[float], embedding_model: str, top_k: 
             )
             rows = cur.fetchall()
             for row in rows:
-                results.append({
-                    "id": row[0],
-                    "filename": row[1],
-                    "content": row[2],
-                    "similarity": row[3]
-                })
+                results.append(
+                    {"id": row[0], "filename": row[1], "content": row[2], "similarity": row[3]}
+                )
     return results
 
 

@@ -1,4 +1,5 @@
 import os
+import shutil
 
 import psycopg
 import pytest
@@ -6,7 +7,7 @@ import pytest
 # OVERRIDE THE DATABASE NAME GLOBALLY
 os.environ["DB_NAME"] = "localragvault_test"
 
-from core.config import DB_HOST, DB_PASSWORD, DB_PORT, DB_USER
+from core.config import BASE_DIR, DB_HOST, DB_PASSWORD, DB_PORT, DB_USER
 from core.database import get_db_connection, init_db
 
 
@@ -59,6 +60,14 @@ def setup_test_database():
         # 3. Initialize our application tables
         init_db()
 
+        # Ensures test database handles schema additions if table already existed before
+        with get_db_connection() as conn_mig:
+            with conn_mig.cursor() as cur_mig:
+                cur_mig.execute("""
+                    ALTER TABLE documents 
+                    ADD COLUMN IF NOT EXISTS file_path TEXT NOT NULL DEFAULT '';
+                """)
+
     except Exception as e:
         pytest.exit(f"Critical failure provisioning the test database: {e}")
 
@@ -75,3 +84,12 @@ def clean_database():
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("TRUNCATE TABLE documents RESTART IDENTITY;")
+
+
+@pytest.fixture(scope="session", autouse=True)
+def cleanup_test_uploads():
+    """Cleans up the isolated test upload directory after the test session ends."""
+    yield
+    test_upload_dir = BASE_DIR / "uploads_test"
+    if test_upload_dir.exists():
+        shutil.rmtree(test_upload_dir)

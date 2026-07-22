@@ -139,9 +139,7 @@ async def search_documents(search: SearchQuery) -> VectorSearchResponse:
         raise HTTPException(status_code=500, detail="Failed to generate embedding for the query.")
 
     raw_results = search_vector_db(
-        query_embedding=query_embedding,
-        embedding_model=search.embedding_model,
-        top_k=search.top_k
+        query_embedding=query_embedding, embedding_model=search.embedding_model, top_k=search.top_k
     )
 
     results = [

@@ -30,7 +30,11 @@ DEFAULT_CHUNK_OVERLAP = 200
 
 
 # File Storage Configuration
-UPLOAD_DIR = BASE_DIR / "uploads"
+if os.getenv("DB_NAME") == "localragvault_test":
+    UPLOAD_DIR = BASE_DIR / "uploads_test"
+else:
+    UPLOAD_DIR = BASE_DIR / "uploads"
+
 UPLOAD_DIR.mkdir(exist_ok=True)
 
 

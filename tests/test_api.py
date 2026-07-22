@@ -150,3 +150,18 @@ def test_ask_question_real_model() -> None:
     )
     assert len(result["sources"]) > 0
     assert result["sources"][0]["filename"] == "integration_doc.txt"
+
+
+def test_workspace_inventory_endpoint() -> None:
+    """Verify that uploading a file populates the workspace inventory ledger."""
+    file_content = b"Inventory tracking test payload bytes."
+    client.post("/upload/", files={"file": ("inventory_test.txt", file_content, "text/plain")})
+
+    response = client.get("/inventory/default")
+    assert response.status_code == 200
+    data = response.json()
+
+    assert data["workspace_id"] == "default"
+    assert len(data["documents"]) > 0
+    assert data["documents"][0]["filename"] == "inventory_test.txt"
+    assert "inventory_test.txt" in data["documents"][0]["file_path"]
