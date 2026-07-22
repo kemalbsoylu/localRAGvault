@@ -46,7 +46,6 @@ def init_db() -> None:
                         filename TEXT NOT NULL,
                         file_path TEXT NOT NULL,
                         content TEXT NOT NULL,
-                        embedding_model TEXT NOT NULL,
                         embedding vector,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
@@ -127,7 +126,6 @@ def insert_document_chunks(
     workspace_id: str,
     filename: str,
     file_path: str,
-    embedding_model: str,
     chunk_data: List[Tuple[str, List[float]]],
 ) -> int:
     """Bulk inserts text chunks and their corresponding vector embeddings."""
@@ -139,10 +137,10 @@ def insert_document_chunks(
                     if embedding:
                         cur.execute(
                             """
-                            INSERT INTO documents (workspace_id, filename, file_path, content, embedding_model, embedding)
-                            VALUES (%s, %s, %s, %s, %s, %s)
+                            INSERT INTO documents (workspace_id, filename, file_path, content, embedding)
+                            VALUES (%s, %s, %s, %s, %s)
                             """,
-                            (workspace_id, filename, file_path, chunk, embedding_model, embedding),
+                            (workspace_id, filename, file_path, chunk, embedding),
                         )
                         inserted_chunks += 1
         return inserted_chunks
@@ -179,7 +177,7 @@ def fetch_workspace_inventory(workspace_id: str) -> List[dict]:
 
 
 def search_vector_db(
-    workspace_id: str, query_embedding: List[float], embedding_model: str, top_k: int
+    workspace_id: str, query_embedding: List[float], top_k: int
 ) -> List[dict]:
     """Performs a vector similarity search against the document chunks."""
     results = []
@@ -190,11 +188,11 @@ def search_vector_db(
                     """
                     SELECT id, filename, content, 1 - (embedding <=> %s::vector) AS similarity
                     FROM documents
-                    WHERE workspace_id = %s AND embedding_model = %s
+                    WHERE workspace_id = %s
                     ORDER BY embedding <=> %s::vector
                     LIMIT %s;
                     """,
-                    (query_embedding, workspace_id, embedding_model, query_embedding, top_k),
+                    (query_embedding, workspace_id, query_embedding, top_k),
                 )
                 rows = cur.fetchall()
                 for row in rows:

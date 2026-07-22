@@ -210,7 +210,6 @@ async def upload_document(
             workspace_id=workspace_id,
             filename=file.filename,
             file_path=str(physical_file_path),
-            embedding_model=embedding_model,
             chunk_data=chunk_data,
         )
 
@@ -263,7 +262,6 @@ async def search_documents(search: SearchQuery) -> VectorSearchResponse:
         raw_results = search_vector_db(
             workspace_id=search.workspace_id,
             query_embedding=query_embedding,
-            embedding_model=search.embedding_model,
             top_k=search.top_k,
         )
 
@@ -322,7 +320,6 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
         raw_results = search_vector_db(
             workspace_id=search.workspace_id,
             query_embedding=query_embedding,
-            embedding_model=search.embedding_model,
             top_k=search.top_k,
         )
 
