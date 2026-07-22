@@ -5,7 +5,32 @@ from pydantic import BaseModel, Field, field_validator
 from core.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_GENERATION_MODEL
 
 
+def normalize_tag(value: str) -> str:
+    """Helper to ensure models have a tag"""
+    return value if ":" in value else f"{value}:latest"
+
+
+class WorkspaceCreate(BaseModel):
+    name: str = Field(..., description="Human-readable workspace name.")
+    embedding_model: str = Field(..., description="The embedding model locked to this workspace.")
+
+    @field_validator("embedding_model", mode="before")
+    @classmethod
+    def enforce_model_tag(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return normalize_tag(value)
+        return value
+
+
+class WorkspaceResponse(BaseModel):
+    id: str
+    name: str
+    embedding_model: str
+    dimension: int
+
+
 class SearchQuery(BaseModel):
+    workspace_id: str = Field(..., description="Target workspace to search within.")
     query: str = Field(..., description="The query string used for matching.")
     top_k: int = Field(default=3, ge=1, le=20, description="Number of context chunks to pull.")
     embedding_model: str = Field(
@@ -19,7 +44,7 @@ class SearchQuery(BaseModel):
     @classmethod
     def enforce_model_tag(cls, value: Any) -> Any:
         if isinstance(value, str):
-            return value if ":" in value else f"{value}:latest"
+            return normalize_tag(value)
         return value
 
 
@@ -36,12 +61,14 @@ class SearchResultCard(BaseModel):
 
 
 class VectorSearchResponse(BaseModel):
+    workspace_id: str
     query: str
     embedding_model: str
     results: List[SearchResultCard]
 
 
 class RAGQueryResponse(BaseModel):
+    workspace_id: str
     query: str
     answer: str
     generation_model: str
@@ -51,6 +78,7 @@ class RAGQueryResponse(BaseModel):
 
 class IngestionResponse(BaseModel):
     status: str
+    workspace_id: str
     filename: str
     model_used: str
     chunks_saved: int

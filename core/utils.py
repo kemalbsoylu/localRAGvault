@@ -48,7 +48,7 @@ def get_embedding(text: str, model_name: str = DEFAULT_EMBEDDING_MODEL) -> List[
         return response["embedding"]
     except Exception as e:
         logger.error(f"Ollama vector embedding engine failure [{target_model}]: {e}")
-        return []
+        raise
 
 
 def generate_answer(
@@ -124,7 +124,7 @@ def get_available_models() -> List[str]:
         return [normalize_model_name(m.model) for m in response.models if m.model is not None]
     except Exception as e:
         logger.error(f"Failed to fetch model catalog from local Ollama service: {e}")
-        return []
+        raise
 
 
 def ensure_default_models_exist() -> None:

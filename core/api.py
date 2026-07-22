@@ -1,3 +1,4 @@
+import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, List
 
@@ -5,7 +6,10 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
 from core.config import DEFAULT_EMBEDDING_MODEL
 from core.database import (
+    create_workspace,
     fetch_workspace_inventory,
+    get_all_workspaces,
+    get_workspace,
     init_db,
     insert_document_chunks,
     search_vector_db,
@@ -20,7 +24,9 @@ from core.schemas import (
     SearchQuery,
     SearchResultCard,
     VectorSearchResponse,
+    WorkspaceCreate,
     WorkspaceInventoryResponse,
+    WorkspaceResponse,
 )
 from core.utils import (
     chunk_text,
@@ -36,12 +42,9 @@ from core.utils import (
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger.info("Initializing localRAGvault core infrastructure components...")
-
     init_db()
     ensure_default_models_exist()
-
     yield
-
     logger.info("Shutting down localRAGvault runtime application context...")
 
 
@@ -61,31 +64,92 @@ def health_check() -> dict:
 @app.get("/models/", response_model=ModelListResponse)
 def list_models() -> ModelListResponse:
     """Returns a list of all models currently downloaded in Ollama."""
-    models = get_available_models()
-    status = "success" if models else "error"
-    return ModelListResponse(status=status, models=models)
+    try:
+        models = get_available_models()
+        return ModelListResponse(status="success" if models else "error", models=models)
+    except Exception as e:
+        logger.error(f"Error fetching models: {e}")
+        raise HTTPException(
+            status_code=500, detail="Failed to fetch available models from Ollama."
+        ) from e
+
+
+@app.get("/workspaces/", response_model=List[WorkspaceResponse])
+def list_workspaces() -> List[WorkspaceResponse]:
+    """Retrieves all active workspaces."""
+    try:
+        return [WorkspaceResponse(**ws) for ws in get_all_workspaces()]
+    except Exception as e:
+        logger.error(f"Error listing workspaces: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch workspaces.") from e
+
+
+@app.post("/workspaces/", response_model=WorkspaceResponse)
+def create_new_workspace(ws: WorkspaceCreate) -> WorkspaceResponse:
+    """Creates a new workspace and probes the embedding model to lock in vector dimensions."""
+    logger.info(f"Probing embedding model '{ws.embedding_model}' for new workspace '{ws.name}'...")
+
+    try:
+        probe_vector = get_embedding("test dimension probe", model_name=ws.embedding_model)
+    except Exception as e:
+        logger.error(f"Ollama failure during vector probe for '{ws.embedding_model}': {e}")
+        raise HTTPException(
+            status_code=500, detail="Internal error communicating with Ollama for probing."
+        ) from e
+
+    if not probe_vector:
+        error_msg = f"Failed to generate probe vector. Ensure '{ws.embedding_model}' is valid and pulled locally."
+        logger.error(error_msg)
+        raise HTTPException(status_code=400, detail=error_msg)
+
+    dimension = len(probe_vector)
+    workspace_id = uuid.uuid4().hex[:8]
+
+    try:
+        create_workspace(workspace_id, ws.name, ws.embedding_model, dimension)
+        logger.info(f"Workspace '{ws.name}' ({workspace_id}) locked with dimension {dimension}.")
+    except Exception as e:
+        logger.error(f"Failed to persist workspace in database: {e}")
+        raise HTTPException(
+            status_code=500, detail="Failed to persist workspace in the database."
+        ) from e
+
+    return WorkspaceResponse(
+        id=workspace_id, name=ws.name, embedding_model=ws.embedding_model, dimension=dimension
+    )
 
 
 @app.get("/inventory/{workspace_id}", response_model=WorkspaceInventoryResponse)
 def get_workspace_inventory(workspace_id: str) -> WorkspaceInventoryResponse:
     """Returns a list of physical files currently indexed for a given workspace."""
-    raw_inventory = fetch_workspace_inventory(workspace_id)
+    try:
+        ws = get_workspace(workspace_id)
+        if not ws:
+            logger.warning(f"Inventory fetch failed: Workspace '{workspace_id}' not found.")
+            raise HTTPException(status_code=404, detail="Target workspace does not exist.")
 
-    documents = [
-        DocumentInventoryItem(
-            filename=item["filename"],
-            file_path=item["file_path"],
-            total_chunks=item["total_chunks"],
-        )
-        for item in raw_inventory
-    ]
-
-    return WorkspaceInventoryResponse(workspace_id=workspace_id, documents=documents)
+        raw_inventory = fetch_workspace_inventory(workspace_id)
+        documents = [
+            DocumentInventoryItem(
+                filename=item["filename"],
+                file_path=item["file_path"],
+                total_chunks=item["total_chunks"],
+            )
+            for item in raw_inventory
+        ]
+        return WorkspaceInventoryResponse(workspace_id=workspace_id, documents=documents)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching inventory for {workspace_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch workspace inventory.") from e
 
 
 @app.post("/upload/", response_model=IngestionResponse)
 async def upload_document(
-    file: UploadFile = File(...), embedding_model: str = Form(DEFAULT_EMBEDDING_MODEL)
+    workspace_id: str = Form(...),
+    file: UploadFile = File(...),
+    embedding_model: str = Form(DEFAULT_EMBEDDING_MODEL),
 ) -> IngestionResponse:
     if not file.filename or not file.filename.endswith((".txt", ".md")):
         logger.warning(f"Rejected malicious or invalid file upload attempt: {file.filename}")
@@ -93,114 +157,205 @@ async def upload_document(
             status_code=400, detail="Only .txt and .md files are supported for now."
         )
 
-    embedding_model = normalize_model_name(embedding_model)
-    content_bytes = await file.read()
+    try:
+        ws = get_workspace(workspace_id)
+    except Exception as e:
+        logger.error(f"Database error while looking up workspace {workspace_id}: {e}")
+        raise HTTPException(
+            status_code=500, detail="Internal server error looking up workspace."
+        ) from e
 
+    if not ws:
+        logger.warning(f"Upload rejected: Workspace '{workspace_id}' not found.")
+        raise HTTPException(status_code=404, detail="Target workspace does not exist.")
+
+    embedding_model = normalize_model_name(embedding_model)
+
+    if ws["embedding_model"] != embedding_model:
+        logger.warning(
+            f"Vector pollution blocked: Workspace requires {ws['embedding_model']}, got {embedding_model}."
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model mismatch! Workspace '{ws['name']}' is permanently locked to '{ws['embedding_model']}'.",
+        )
+
+    content_bytes = await file.read()
     try:
         content_text = content_bytes.decode("utf-8")
     except UnicodeDecodeError as err:
         logger.error(f"Encoding conversion breakdown during reading: {file.filename}")
         raise HTTPException(status_code=400, detail="File must be valid UTF-8 text.") from err
 
-    # Hardcode workspace_id until workspaces are implemented
-    workspace_id = "default"
-    physical_file_path = save_physical_file(workspace_id, file.filename, content_bytes)
-    logger.info(f"Physical file saved to disk: {physical_file_path}")
+    try:
+        physical_file_path = save_physical_file(workspace_id, file.filename, content_bytes)
+        logger.info(f"Physical file saved to disk: {physical_file_path}")
 
-    chunks = chunk_text(content_text)
-    logger.info(f"Processing '{file.filename}' -> generated {len(chunks)} text blocks.")
+        chunks = chunk_text(content_text)
+        logger.info(f"Processing '{file.filename}' -> generated {len(chunks)} text blocks.")
 
-    chunk_data = []
-    for chunk in chunks:
-        embedding = get_embedding(chunk, model_name=embedding_model)
-        chunk_data.append((chunk, embedding))
+        chunk_data = []
+        for chunk in chunks:
+            embedding = get_embedding(chunk, model_name=embedding_model)
+            chunk_data.append((chunk, embedding))
 
-    inserted_chunks = insert_document_chunks(
-        filename=file.filename,
-        file_path=str(physical_file_path),
-        embedding_model=embedding_model,
-        chunk_data=chunk_data,
-    )
+        inserted_chunks = insert_document_chunks(
+            workspace_id=workspace_id,
+            filename=file.filename,
+            file_path=str(physical_file_path),
+            embedding_model=embedding_model,
+            chunk_data=chunk_data,
+        )
 
-    logger.info(f"Successfully processed ingestion: {inserted_chunks}/{len(chunks)} chunks saved.")
-
-    return IngestionResponse(
-        status="success",
-        filename=file.filename,
-        model_used=embedding_model,
-        chunks_saved=inserted_chunks,
-    )
+        logger.info(
+            f"Successfully processed ingestion: {inserted_chunks}/{len(chunks)} chunks saved."
+        )
+        return IngestionResponse(
+            status="success",
+            workspace_id=workspace_id,
+            filename=file.filename,
+            model_used=embedding_model,
+            chunks_saved=inserted_chunks,
+        )
+    except Exception as e:
+        logger.error(f"Error during file ingestion processing: {e}")
+        raise HTTPException(
+            status_code=500, detail="Internal server error during document processing."
+        ) from e
 
 
 @app.post("/search/", response_model=VectorSearchResponse)
 async def search_documents(search: SearchQuery) -> VectorSearchResponse:
-    query_embedding = get_embedding(search.query, model_name=search.embedding_model)
-    if not query_embedding:
-        raise HTTPException(status_code=500, detail="Failed to generate embedding for the query.")
+    try:
+        ws = get_workspace(search.workspace_id)
+    except Exception as e:
+        logger.error(f"DB Error verifying workspace for search: {e}")
+        raise HTTPException(status_code=500, detail="Database failure verifying workspace.") from e
 
-    raw_results = search_vector_db(
-        query_embedding=query_embedding, embedding_model=search.embedding_model, top_k=search.top_k
-    )
+    if not ws:
+        logger.warning(f"Search aborted: Workspace '{search.workspace_id}' not found.")
+        raise HTTPException(status_code=404, detail="Workspace not found.")
 
-    results = [
-        SearchResultCard(
-            id=row["id"],
-            filename=row["filename"],
-            content=row["content"],
-            similarity=round(row["similarity"], 4),
+    if ws["embedding_model"] != search.embedding_model:
+        logger.warning(
+            f"Search model mismatch. Expected '{ws['embedding_model']}', got '{search.embedding_model}'."
         )
-        for row in raw_results
-    ]
+        raise HTTPException(
+            status_code=400,
+            detail=f"Search must use the workspace's locked model: '{ws['embedding_model']}'.",
+        )
 
-    return VectorSearchResponse(
-        query=search.query, embedding_model=search.embedding_model, results=results
-    )
+    try:
+        query_embedding = get_embedding(search.query, model_name=search.embedding_model)
+        if not query_embedding:
+            logger.error("Failed to generate search query embedding.")
+            raise HTTPException(
+                status_code=500, detail="Failed to generate embedding for the query."
+            )
+
+        raw_results = search_vector_db(
+            workspace_id=search.workspace_id,
+            query_embedding=query_embedding,
+            embedding_model=search.embedding_model,
+            top_k=search.top_k,
+        )
+
+        results = [
+            SearchResultCard(
+                id=row["id"],
+                filename=row["filename"],
+                content=row["content"],
+                similarity=round(row["similarity"], 4),
+            )
+            for row in raw_results
+        ]
+
+        return VectorSearchResponse(
+            workspace_id=search.workspace_id,
+            query=search.query,
+            embedding_model=search.embedding_model,
+            results=results,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Vector search failed: {e}")
+        raise HTTPException(status_code=500, detail="Internal error during vector search.") from e
 
 
 @app.post("/ask/", response_model=RAGQueryResponse)
 async def ask_question(search: SearchQuery) -> RAGQueryResponse:
-    logger.info(f"Executing RAG pipeline invocation for user query: '{search.query}'")
-    query_embedding = get_embedding(search.query, model_name=search.embedding_model)
-    if not query_embedding:
-        raise HTTPException(status_code=500, detail="Failed to generate query embedding.")
-
-    raw_results = search_vector_db(
-        query_embedding=query_embedding, embedding_model=search.embedding_model, top_k=search.top_k
+    logger.info(
+        f"Executing RAG pipeline for query: '{search.query}' in workspace {search.workspace_id}"
     )
 
-    retrieved_chunks: List[str] = []
-    sources: List[DocumentSource] = []
+    try:
+        ws = get_workspace(search.workspace_id)
+    except Exception as e:
+        logger.error(f"DB Error fetching workspace for RAG: {e}")
+        raise HTTPException(status_code=500, detail="Database failure resolving workspace.") from e
 
-    for row in raw_results:
-        retrieved_chunks.append(row["content"])
-        sources.append(
-            DocumentSource(filename=row["filename"], similarity=round(row["similarity"], 4))
+    if not ws:
+        logger.warning(f"Ask aborted: Workspace '{search.workspace_id}' not found.")
+        raise HTTPException(status_code=404, detail="Workspace not found.")
+
+    if ws["embedding_model"] != search.embedding_model:
+        logger.warning("Ask aborted: Model mismatch preventing vector collision.")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Request embedding model must match workspace: '{ws['embedding_model']}'.",
         )
 
-    if not retrieved_chunks:
-        logger.info("No matching contextual chunks found inside the database vaults.")
+    try:
+        query_embedding = get_embedding(search.query, model_name=search.embedding_model)
+        if not query_embedding:
+            logger.error("Failed to generate query embedding for RAG.")
+            raise HTTPException(status_code=500, detail="Failed to generate query embedding.")
+
+        raw_results = search_vector_db(
+            workspace_id=search.workspace_id,
+            query_embedding=query_embedding,
+            embedding_model=search.embedding_model,
+            top_k=search.top_k,
+        )
+
+        retrieved_chunks = [row["content"] for row in raw_results]
+        sources = [
+            DocumentSource(filename=row["filename"], similarity=round(row["similarity"], 4))
+            for row in raw_results
+        ]
+
+        if not retrieved_chunks:
+            logger.info("No matching contextual chunks found inside the vault.")
+            return RAGQueryResponse(
+                workspace_id=search.workspace_id,
+                query=search.query,
+                answer="No relevant documents found in the vault.",
+                generation_model=search.generation_model,
+                embedding_model=search.embedding_model,
+                sources=[],
+            )
+
+        llm_response = generate_answer(
+            query=search.query, context_chunks=retrieved_chunks, model_name=search.generation_model
+        )
+
+        if not llm_response.is_valid:
+            logger.info("LLM returned context failure warning. Hiding document references.")
+            sources = []
+
         return RAGQueryResponse(
+            workspace_id=search.workspace_id,
             query=search.query,
-            answer="No relevant documents found in the vault.",
+            answer=llm_response.text,
             generation_model=search.generation_model,
             embedding_model=search.embedding_model,
-            sources=[],
+            sources=sources,
         )
-
-    llm_response = generate_answer(
-        query=search.query,
-        context_chunks=retrieved_chunks,
-        model_name=search.generation_model,
-    )
-
-    if not llm_response.is_valid:
-        logger.info("LLM returned context failure warning. Hiding document references.")
-        sources = []
-
-    return RAGQueryResponse(
-        query=search.query,
-        answer=llm_response.text,
-        generation_model=search.generation_model,
-        embedding_model=search.embedding_model,
-        sources=sources,
-    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"RAG pipeline failure: {e}")
+        raise HTTPException(
+            status_code=500, detail="Internal server error during RAG generation."
+        ) from e
