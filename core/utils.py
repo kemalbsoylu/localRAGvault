@@ -123,3 +123,31 @@ def get_available_models() -> List[str]:
     except Exception as e:
         logger.error(f"Failed to fetch model catalog from local Ollama service: {e}")
         return []
+
+
+def ensure_default_models_exist() -> None:
+    """Verifies required Ollama models and auto-pulls them if missing."""
+    logger.info("Verifying required Ollama models...")
+    try:
+        available_models = get_available_models()
+        required_models = [DEFAULT_EMBEDDING_MODEL, DEFAULT_GENERATION_MODEL]
+
+        for model in required_models:
+            target_model = normalize_model_name(model)
+
+            if target_model not in available_models:
+                logger.info(
+                    f"Model '{target_model}' missing locally. Initiating auto-pull (this may take a few minutes)..."
+                )
+                try:
+                    ollama.pull(target_model)
+                    logger.info(f"Successfully downloaded and registered '{target_model}'.")
+                except Exception as pull_err:
+                    logger.error(
+                        f"Failed to pull '{target_model}': {pull_err}. Proceeding with startup."
+                    )
+            else:
+                logger.info(f"Model '{target_model}' is already available.")
+
+    except Exception as e:
+        logger.error(f"Failed to communicate with local Ollama daemon during startup: {e}")
