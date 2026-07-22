@@ -1,3 +1,5 @@
+from typing import List, Tuple
+
 import psycopg
 from pgvector.psycopg import register_vector
 
@@ -43,6 +45,53 @@ def init_db() -> None:
     except Exception as e:
         logger.error(f"Critical error during database schema creation: {e}")
         raise
+
+
+def insert_document_chunks(
+    filename: str, 
+    file_path: str, 
+    embedding_model: str, 
+    chunk_data: List[Tuple[str, List[float]]]
+) -> int:
+    """Bulk inserts text chunks and their corresponding vector embeddings."""
+    inserted_chunks = 0
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            for chunk, embedding in chunk_data:
+                if embedding:
+                    cur.execute(
+                        """
+                        INSERT INTO documents (filename, file_path, content, embedding_model, embedding)
+                        VALUES (%s, %s, %s, %s, %s)
+                    """,
+                        (filename, file_path, chunk, embedding_model, embedding),
+                    )
+                    inserted_chunks += 1
+    return inserted_chunks
+
+
+def fetch_workspace_inventory(workspace_id: str) -> List[dict]:
+    """Retrieves file aggregates for a given workspace."""
+    # Note: We will use workspace_id in the WHERE clause when workspaces are implemented
+    inventory = []
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT filename, file_path, COUNT(*) as total_chunks
+                FROM documents
+                GROUP BY filename, file_path
+                ORDER BY filename ASC;
+                """
+            )
+            rows = cur.fetchall()
+            for row in rows:
+                inventory.append({
+                    "filename": row[0],
+                    "file_path": row[1],
+                    "total_chunks": row[2]
+                })
+    return inventory
 
 
 if __name__ == "__main__":

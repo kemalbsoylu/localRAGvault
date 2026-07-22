@@ -3,8 +3,13 @@ from typing import AsyncGenerator, List
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
-from core.config import DEFAULT_EMBEDDING_MODEL, UPLOAD_DIR
-from core.database import get_db_connection, init_db
+from core.config import DEFAULT_EMBEDDING_MODEL
+from core.database import (
+    fetch_workspace_inventory,
+    get_db_connection,
+    init_db,
+    insert_document_chunks,
+)
 from core.logging_config import logger
 from core.schemas import (
     DocumentInventoryItem,
@@ -24,6 +29,7 @@ from core.utils import (
     get_available_models,
     get_embedding,
     normalize_model_name,
+    save_physical_file,
 )
 
 
@@ -63,26 +69,18 @@ def list_models() -> ModelListResponse:
 @app.get("/inventory/{workspace_id}", response_model=WorkspaceInventoryResponse)
 def get_workspace_inventory(workspace_id: str) -> WorkspaceInventoryResponse:
     """Returns a list of physical files currently indexed for a given workspace."""
-    inventory: List[DocumentInventoryItem] = []
+    raw_inventory = fetch_workspace_inventory(workspace_id)
 
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            # Group by physical file to see how many chunks each file produced
-            cur.execute(
-                """
-                SELECT filename, file_path, COUNT(*) as total_chunks
-                FROM documents
-                GROUP BY filename, file_path
-                ORDER BY filename ASC;
-                """
-            )
-            rows = cur.fetchall()
-            for row in rows:
-                inventory.append(
-                    DocumentInventoryItem(filename=row[0], file_path=row[1], total_chunks=row[2])
-                )
+    documents = [
+        DocumentInventoryItem(
+            filename=item["filename"],
+            file_path=item["file_path"],
+            total_chunks=item["total_chunks"],
+        )
+        for item in raw_inventory
+    ]
 
-    return WorkspaceInventoryResponse(workspace_id=workspace_id, documents=inventory)
+    return WorkspaceInventoryResponse(workspace_id=workspace_id, documents=documents)
 
 
 @app.post("/upload/", response_model=IngestionResponse)
@@ -96,21 +94,7 @@ async def upload_document(
         )
 
     embedding_model = normalize_model_name(embedding_model)
-
-    # Hardcode workspace ID until workspaces are implemented
-    workspace_id = "default"
-    workspace_dir = UPLOAD_DIR / workspace_id
-    workspace_dir.mkdir(parents=True, exist_ok=True)
-
-    physical_file_path = workspace_dir / file.filename
-
     content_bytes = await file.read()
-
-    # Save the raw bytes to the disk
-    with open(physical_file_path, "wb") as f:
-        f.write(content_bytes)
-
-    logger.info(f"Physical file saved to disk: {physical_file_path}")
 
     try:
         content_text = content_bytes.decode("utf-8")
@@ -118,25 +102,28 @@ async def upload_document(
         logger.error(f"Encoding conversion breakdown during reading: {file.filename}")
         raise HTTPException(status_code=400, detail="File must be valid UTF-8 text.") from err
 
+    # Hardcode workspace_id until workspaces are implemented
+    workspace_id = "default"
+    physical_file_path = save_physical_file(workspace_id, file.filename, content_bytes)
+    logger.info(f"Physical file saved to disk: {physical_file_path}")
+
     chunks = chunk_text(content_text)
     logger.info(f"Processing '{file.filename}' -> generated {len(chunks)} text blocks.")
 
-    inserted_chunks = 0
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            for chunk in chunks:
-                embedding = get_embedding(chunk, model_name=embedding_model)
-                if embedding:
-                    cur.execute(
-                        """
-                        INSERT INTO documents (filename, file_path, content, embedding_model, embedding)
-                        VALUES (%s, %s, %s, %s, %s)
-                        """,
-                        (file.filename, str(physical_file_path), chunk, embedding_model, embedding),
-                    )
-                    inserted_chunks += 1
+    chunk_data = []
+    for chunk in chunks:
+        embedding = get_embedding(chunk, model_name=embedding_model)
+        chunk_data.append((chunk, embedding))
+
+    inserted_chunks = insert_document_chunks(
+        filename=file.filename,
+        file_path=str(physical_file_path),
+        embedding_model=embedding_model,
+        chunk_data=chunk_data,
+    )
 
     logger.info(f"Successfully processed ingestion: {inserted_chunks}/{len(chunks)} chunks saved.")
+
     return IngestionResponse(
         status="success",
         filename=file.filename,

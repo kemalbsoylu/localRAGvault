@@ -71,6 +71,7 @@ class DocumentInventoryItem(BaseModel):
     file_path: str
     total_chunks: int
 
+
 class WorkspaceInventoryResponse(BaseModel):
     workspace_id: str
     documents: List[DocumentInventoryItem]

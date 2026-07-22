@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import List
 
 import ollama
@@ -7,6 +8,7 @@ from core.config import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_GENERATION_MODEL,
+    UPLOAD_DIR,
 )
 from core.logging_config import logger
 from core.schemas import LLMInternalResponse
@@ -151,3 +153,16 @@ def ensure_default_models_exist() -> None:
 
     except Exception as e:
         logger.error(f"Failed to communicate with local Ollama daemon during startup: {e}")
+
+
+def save_physical_file(workspace_id: str, filename: str, content_bytes: bytes) -> Path:
+    """Saves raw bytes to the physical disk inside the workspace directory."""
+    workspace_dir = UPLOAD_DIR / workspace_id
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+
+    physical_file_path = workspace_dir / filename
+
+    with open(physical_file_path, "wb") as f:
+        f.write(content_bytes)
+
+    return physical_file_path
