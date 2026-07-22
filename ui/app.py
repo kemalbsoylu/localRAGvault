@@ -14,6 +14,13 @@ st.set_page_config(page_title="localRAGvault", page_icon="🗄️", layout="wide
 st.title("🗄️ localRAGvault")
 st.markdown("Your privacy-first, fully local document assistant.")
 
+if "search_history" not in st.session_state:
+    st.session_state.search_history = []
+if "is_processing" not in st.session_state:
+    st.session_state.is_processing = False
+if "current_query" not in st.session_state:
+    st.session_state.current_query = ""
+
 
 @st.cache_data(ttl=60)
 def fetch_available_models():
@@ -28,7 +35,6 @@ def fetch_available_models():
 
 available_models = fetch_available_models()
 
-# Sort available options dynamically
 embedding_options = [m for m in available_models if "embed" in m] or [DEFAULT_EMBEDDING_MODEL]
 generation_options = [m for m in available_models if "embed" not in m] or [DEFAULT_GENERATION_MODEL]
 
@@ -51,6 +57,7 @@ with st.sidebar:
         options=embedding_options,
         index=default_embed_idx,
         help="Must match the model space used to search existing collections.",
+        disabled=st.session_state.is_processing,
     )
 
     selected_gen_model = st.selectbox(
@@ -58,35 +65,39 @@ with st.sidebar:
         options=generation_options,
         index=default_gen_idx,
         help="The language model that processes context and generates the reply.",
+        disabled=st.session_state.is_processing,
     )
 
     st.markdown("---")
     st.header("Add to Vault")
-    uploaded_file = st.file_uploader("Upload a .txt or .md file", type=["txt", "md"])
 
-    if st.button("Ingest Document"):
-        if uploaded_file is not None:
-            with st.spinner("Chunking and embedding document..."):
-                files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "text/plain")}
-                data = {"embedding_model": selected_embed_model}
-                try:
-                    res = requests.post(f"{API_URL}/upload/", files=files, data=data)
-                    if res.status_code == 200:
-                        res_data = res.json()
-                        st.success(
-                            f"✅ Success! {res_data['chunks_saved']} chunks saved using '{selected_embed_model}'."
-                        )
-                    else:
-                        st.error(f"Failed to ingest: {res.text}")
-                except requests.exceptions.ConnectionError:
-                    st.error("Backend is unreachable. Is FastAPI running?")
-        else:
+    with st.form("upload_form", clear_on_submit=True):
+        uploaded_file = st.file_uploader("Upload a .txt or .md file", type=["txt", "md"])
+        submit_upload = st.form_submit_button(
+            "Ingest Document", disabled=st.session_state.is_processing
+        )
+
+        if submit_upload and uploaded_file is not None:
+            files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "text/plain")}
+            data = {"embedding_model": selected_embed_model}
+            try:
+                res = requests.post(f"{API_URL}/upload/", files=files, data=data)
+                if res.status_code == 200:
+                    res_data = res.json()
+                    st.success(
+                        f"✅ Success! {res_data['chunks_saved']} chunks saved using '{selected_embed_model}'."
+                    )
+                else:
+                    st.error(f"Failed to ingest: {res.text}")
+            except requests.exceptions.ConnectionError:
+                st.error("Backend is unreachable. Is FastAPI running?")
+        elif submit_upload:
             st.warning("Please select a file first.")
 
     st.markdown("---")
     st.header("📂 Vault Inventory")
 
-    if st.button("Refresh Inventory"):
+    if st.button("Refresh Inventory", disabled=st.session_state.is_processing):
         st.rerun()
 
     try:
@@ -109,52 +120,52 @@ with st.sidebar:
 # --- Main Search Window ---
 st.header("Search your Vault")
 
-if "search_history" not in st.session_state:
-    st.session_state.search_history = []
-if "is_processing" not in st.session_state:
-    st.session_state.is_processing = False
-
-with st.form(key="search_form", clear_on_submit=True):
+with st.form(key="search_form"):
     query = st.text_input(
         "What would you like to know about your documents?",
         placeholder="Enter your query",
+        disabled=st.session_state.is_processing,
     )
-    submit_button = st.form_submit_button(label="Search & Generate")
+    submit_button = st.form_submit_button(
+        label="Search & Generate", disabled=st.session_state.is_processing
+    )
 
 if submit_button and query:
-    if st.session_state.is_processing:
-        st.warning("A query is already processing. Please wait a moment.")
-    else:
-        st.session_state.is_processing = True
+    st.session_state.is_processing = True
+    st.session_state.current_query = query
+    st.rerun()
 
-        with st.spinner("Searching the vault and generating an answer..."):
-            payload = {
-                "query": query,
-                "top_k": 3,
-                "embedding_model": selected_embed_model,
-                "generation_model": selected_gen_model,
-            }
-            try:
-                res = requests.post(f"{API_URL}/ask/", json=payload)
-                if res.status_code == 200:
-                    res_data = res.json()
-                    st.session_state.search_history.insert(
-                        0,
-                        {
-                            "query": query,
-                            "answer": res_data["answer"],
-                            "sources": res_data["sources"],
-                            "gen_model": res_data["generation_model"],
-                            "embed_model": res_data["embedding_model"],
-                        },
-                    )
-                else:
-                    st.error(f"Error generating answer: {res.text}")
-            except requests.exceptions.ConnectionError:
-                st.error("Backend is unreachable. Is FastAPI running?")
+if st.session_state.is_processing and st.session_state.current_query:
+    with st.spinner("Searching the vault and generating an answer..."):
+        payload = {
+            "query": st.session_state.current_query,
+            "top_k": 3,
+            "embedding_model": selected_embed_model,
+            "generation_model": selected_gen_model,
+        }
+        try:
+            res = requests.post(f"{API_URL}/ask/", json=payload)
+            if res.status_code == 200:
+                res_data = res.json()
+                st.session_state.search_history.insert(
+                    0,
+                    {
+                        "query": st.session_state.current_query,
+                        "answer": res_data["answer"],
+                        "sources": res_data["sources"],
+                        "gen_model": res_data["generation_model"],
+                        "embed_model": res_data["embedding_model"],
+                    },
+                )
+            else:
+                st.error(f"Error generating answer: {res.text}")
+        except requests.exceptions.ConnectionError:
+            st.error("Backend is unreachable. Is FastAPI running?")
 
-        st.session_state.is_processing = False
-        st.rerun()
+    # Reset processing flag and clear current query cache
+    st.session_state.is_processing = False
+    st.session_state.current_query = ""
+    st.rerun()
 
 st.markdown("---")
 
