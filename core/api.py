@@ -2,6 +2,7 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator, List
 
+import psycopg
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
 from core.config import DEFAULT_EMBEDDING_MODEL
@@ -103,11 +104,17 @@ def create_new_workspace(ws: WorkspaceCreate) -> WorkspaceResponse:
         raise HTTPException(status_code=400, detail=error_msg)
 
     dimension = len(probe_vector)
-    workspace_id = uuid.uuid4().hex[:8]
+    workspace_id = str(uuid.uuid4())
 
     try:
         create_workspace(workspace_id, ws.name, ws.embedding_model, dimension)
         logger.info(f"Workspace '{ws.name}' ({workspace_id}) locked with dimension {dimension}.")
+    except psycopg.errors.UniqueViolation as unique_err:
+        logger.warning(f"Workspace creation rejected: Name '{ws.name}' already exists.")
+        raise HTTPException(
+            status_code=400,
+            detail=f"A workspace named '{ws.name}' already exists. Please choose a unique name.",
+        ) from unique_err
     except Exception as e:
         logger.error(f"Failed to persist workspace in database: {e}")
         raise HTTPException(

@@ -33,7 +33,7 @@ def init_db() -> None:
                 cur.execute("""
                     CREATE TABLE IF NOT EXISTS workspaces (
                         id VARCHAR(50) PRIMARY KEY,
-                        name TEXT NOT NULL,
+                        name TEXT NOT NULL UNIQUE,
                         embedding_model TEXT NOT NULL,
                         dimension INTEGER NOT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
