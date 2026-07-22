@@ -6,9 +6,9 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from core.config import DEFAULT_EMBEDDING_MODEL
 from core.database import (
     fetch_workspace_inventory,
-    get_db_connection,
     init_db,
     insert_document_chunks,
+    search_vector_db,
 )
 from core.logging_config import logger
 from core.schemas import (
@@ -138,36 +138,21 @@ async def search_documents(search: SearchQuery) -> VectorSearchResponse:
     if not query_embedding:
         raise HTTPException(status_code=500, detail="Failed to generate embedding for the query.")
 
-    results: List[SearchResultCard] = []
+    raw_results = search_vector_db(
+        query_embedding=query_embedding,
+        embedding_model=search.embedding_model,
+        top_k=search.top_k
+    )
 
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, filename, content, 1 - (embedding <=> %s::vector) AS similarity
-                FROM documents
-                WHERE embedding_model = %s
-                ORDER BY embedding <=> %s::vector
-                LIMIT %s;
-            """,
-                (
-                    query_embedding,
-                    search.embedding_model,
-                    query_embedding,
-                    search.top_k,
-                ),
-            )
-
-            rows = cur.fetchall()
-            for row in rows:
-                results.append(
-                    SearchResultCard(
-                        id=row[0],
-                        filename=row[1],
-                        content=row[2],
-                        similarity=round(row[3], 4),
-                    )
-                )
+    results = [
+        SearchResultCard(
+            id=row["id"],
+            filename=row["filename"],
+            content=row["content"],
+            similarity=round(row["similarity"], 4),
+        )
+        for row in raw_results
+    ]
 
     return VectorSearchResponse(
         query=search.query, embedding_model=search.embedding_model, results=results
@@ -181,32 +166,18 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
     if not query_embedding:
         raise HTTPException(status_code=500, detail="Failed to generate query embedding.")
 
+    raw_results = search_vector_db(
+        query_embedding=query_embedding, embedding_model=search.embedding_model, top_k=search.top_k
+    )
+
     retrieved_chunks: List[str] = []
     sources: List[DocumentSource] = []
 
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT filename, content, 1 - (embedding <=> %s::vector) AS similarity
-                FROM documents
-                WHERE embedding_model = %s
-                ORDER BY embedding <=> %s::vector
-                LIMIT %s;
-            """,
-                (
-                    query_embedding,
-                    search.embedding_model,
-                    query_embedding,
-                    search.top_k,
-                ),
-            )
-
-            rows = cur.fetchall()
-            for row in rows:
-                filename, content, similarity = row[0], row[1], row[2]
-                retrieved_chunks.append(content)
-                sources.append(DocumentSource(filename=filename, similarity=round(similarity, 4)))
+    for row in raw_results:
+        retrieved_chunks.append(row["content"])
+        sources.append(
+            DocumentSource(filename=row["filename"], similarity=round(row["similarity"], 4))
+        )
 
     if not retrieved_chunks:
         logger.info("No matching contextual chunks found inside the database vaults.")

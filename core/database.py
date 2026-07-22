@@ -94,5 +94,31 @@ def fetch_workspace_inventory(workspace_id: str) -> List[dict]:
     return inventory
 
 
+def search_vector_db(query_embedding: List[float], embedding_model: str, top_k: int) -> List[dict]:
+    """Performs a vector similarity search against the document chunks."""
+    results = []
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, filename, content, 1 - (embedding <=> %s::vector) AS similarity
+                FROM documents
+                WHERE embedding_model = %s
+                ORDER BY embedding <=> %s::vector
+                LIMIT %s;
+                """,
+                (query_embedding, embedding_model, query_embedding, top_k),
+            )
+            rows = cur.fetchall()
+            for row in rows:
+                results.append({
+                    "id": row[0],
+                    "filename": row[1],
+                    "content": row[2],
+                    "similarity": row[3]
+                })
+    return results
+
+
 if __name__ == "__main__":
     init_db()
