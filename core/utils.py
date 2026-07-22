@@ -12,6 +12,13 @@ from core.logging_config import logger
 from core.schemas import LLMInternalResponse
 
 
+def normalize_model_name(model_name: str) -> str:
+    """Ensures model names always carry an explicit tag (defaulting to ':latest' if omitted)."""
+    if not model_name:
+        return model_name
+    return model_name if ":" in model_name else f"{model_name}:latest"
+
+
 def chunk_text(
     text: str,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
@@ -33,11 +40,12 @@ def chunk_text(
 
 def get_embedding(text: str, model_name: str = DEFAULT_EMBEDDING_MODEL) -> List[float]:
     """Generates a vector embedding for the given text using local Ollama."""
+    target_model = normalize_model_name(model_name)
     try:
-        response = ollama.embeddings(model=model_name, prompt=text)
+        response = ollama.embeddings(model=target_model, prompt=text)
         return response["embedding"]
     except Exception as e:
-        logger.error(f"Ollama vector embedding engine failure [{model_name}]: {e}")
+        logger.error(f"Ollama vector embedding engine failure [{target_model}]: {e}")
         return []
 
 
@@ -45,6 +53,7 @@ def generate_answer(
     query: str, context_chunks: List[str], model_name: str = DEFAULT_GENERATION_MODEL
 ) -> LLMInternalResponse:
     """Sends the retrieved context and user query to the local LLM using a strict validation gate."""
+    target_model = normalize_model_name(model_name)
     context_text = "\n---\n".join(context_chunks)
     fallback_msg = "I cannot answer this based on the provided documents."
 
@@ -60,7 +69,7 @@ Question:
 Answer:"""
 
     try:
-        response = ollama.generate(model=model_name, prompt=prompt)
+        response = ollama.generate(model=target_model, prompt=prompt)
         answer_text = response["response"].strip()
         is_valid = fallback_msg not in answer_text
 
@@ -68,38 +77,38 @@ Answer:"""
 
     except ollama.ResponseError as e:
         logger.error(
-            f"Ollama API ResponseError under [{model_name}] (status code: {e.status_code}): {e.error}"
+            f"Ollama API ResponseError under [{target_model}] (status code: {e.status_code}): {e.error}"
         )
 
         if e.status_code == 400:
-            friendly_msg = f"Bad request (status code: 400): Invalid parameters or model payload for '{model_name}'."
+            friendly_msg = f"Bad request (status code: 400): Invalid parameters or model payload for '{target_model}'."
         elif e.status_code == 401:
             friendly_msg = (
                 "Authentication required (status code: 401). Run 'ollama signin' in your terminal."
             )
         elif e.status_code == 403:
-            friendly_msg = f"Subscription required for model '{model_name}' (status code: 403). Upgrade access at https://ollama.com/upgrade"
+            friendly_msg = f"Subscription required for model '{target_model}' (status code: 403). Upgrade access at https://ollama.com/upgrade"
         elif e.status_code == 404:
-            friendly_msg = f"Model '{model_name}' not found (status code: 404). Run 'ollama pull {model_name}' first."
+            friendly_msg = f"Model '{target_model}' not found (status code: 404). Run 'ollama pull {target_model}' first."
         elif e.status_code == 410:
             friendly_msg = (
-                f"Model '{model_name}' has been retired by its provider (status code: 410)."
+                f"Model '{target_model}' has been retired by its provider (status code: 410)."
             )
         elif e.status_code == 429:
             friendly_msg = (
                 "Too many requests (status code: 429). Rate limit exceeded on Ollama Cloud."
             )
         elif e.status_code == 500:
-            friendly_msg = f"Internal server error (status code: 500): The local engine process crashed while running model '{model_name}'."
+            friendly_msg = f"Internal server error (status code: 500): The local engine process crashed while running model '{target_model}'."
         elif e.status_code == 502:
-            friendly_msg = f"Bad gateway (status code: 502): Could not reach cloud model endpoints for '{model_name}'."
+            friendly_msg = f"Bad gateway (status code: 502): Could not reach cloud model endpoints for '{target_model}'."
         else:
             friendly_msg = f"Ollama service error (status code: {e.status_code}): {e.error}"
 
         return LLMInternalResponse(text=friendly_msg, is_valid=False)
 
     except Exception as e:
-        logger.error(f"Unexpected execution error under [{model_name}]: {e}")
+        logger.error(f"Unexpected execution error under [{target_model}]: {e}")
         return LLMInternalResponse(
             text="Connection to local Ollama daemon failed. Ensure the Ollama service is running locally.",
             is_valid=False,
@@ -110,7 +119,7 @@ def get_available_models() -> List[str]:
     """Fetches a list of installed models directly from local Ollama."""
     try:
         response = ollama.list()
-        return [m.model for m in response.models if m.model is not None]
+        return [normalize_model_name(m.model) for m in response.models if m.model is not None]
     except Exception as e:
         logger.error(f"Failed to fetch model catalog from local Ollama service: {e}")
         return []

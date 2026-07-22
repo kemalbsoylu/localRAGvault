@@ -1,6 +1,6 @@
-from typing import List
+from typing import Any, List
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from core.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_GENERATION_MODEL
 
@@ -14,6 +14,13 @@ class SearchQuery(BaseModel):
     generation_model: str = Field(
         default=DEFAULT_GENERATION_MODEL, description="Target text generation model."
     )
+
+    @field_validator("embedding_model", "generation_model", mode="before")
+    @classmethod
+    def enforce_model_tag(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value if ":" in value else f"{value}:latest"
+        return value
 
 
 class DocumentSource(BaseModel):

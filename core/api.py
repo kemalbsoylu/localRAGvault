@@ -16,7 +16,13 @@ from core.schemas import (
     SearchResultCard,
     VectorSearchResponse,
 )
-from core.utils import chunk_text, generate_answer, get_available_models, get_embedding
+from core.utils import (
+    chunk_text,
+    generate_answer,
+    get_available_models,
+    get_embedding,
+    normalize_model_name,
+)
 
 
 @asynccontextmanager
@@ -30,14 +36,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         required_models = [DEFAULT_EMBEDDING_MODEL, DEFAULT_GENERATION_MODEL]
 
         for model in required_models:
-            target_model = model if ":" in model else f"{model}:latest"
+            target_model = normalize_model_name(model)
 
             if target_model not in available_models:
                 logger.info(
                     f"Model '{target_model}' missing locally. Initiating auto-pull (this may take a few minutes)..."
                 )
                 try:
-                    ollama.pull(model)
+                    ollama.pull(target_model)
                     logger.info(f"Successfully downloaded and registered '{target_model}'.")
                 except Exception as pull_err:
                     logger.error(
@@ -83,6 +89,8 @@ async def upload_document(
         raise HTTPException(
             status_code=400, detail="Only .txt and .md files are supported for now."
         )
+
+    embedding_model = normalize_model_name(embedding_model)
 
     content_bytes = await file.read()
     try:

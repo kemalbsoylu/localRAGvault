@@ -33,12 +33,12 @@ embedding_options = [m for m in available_models if "embed" in m] or [DEFAULT_EM
 generation_options = [m for m in available_models if "embed" not in m] or [DEFAULT_GENERATION_MODEL]
 
 default_embed_idx = next(
-    (i for i, m in enumerate(embedding_options) if m.startswith(DEFAULT_EMBEDDING_MODEL)),
+    (i for i, m in enumerate(embedding_options) if m == DEFAULT_EMBEDDING_MODEL),
     0,
 )
 
 default_gen_idx = next(
-    (i for i, m in enumerate(generation_options) if m.startswith(DEFAULT_GENERATION_MODEL)),
+    (i for i, m in enumerate(generation_options) if m == DEFAULT_GENERATION_MODEL),
     0,
 )
 

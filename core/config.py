@@ -20,8 +20,8 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 
 
 # Model Configuration
-DEFAULT_EMBEDDING_MODEL = "embeddinggemma"
-DEFAULT_GENERATION_MODEL = "gemma3"
+DEFAULT_EMBEDDING_MODEL = "embeddinggemma:latest"
+DEFAULT_GENERATION_MODEL = "gemma3:latest"
 
 
 # RAG Hyperparameters
