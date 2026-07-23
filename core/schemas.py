@@ -84,6 +84,12 @@ class ThreadCard(BaseModel):
     id: str
     title: str
     created_at: str
+    updated_at: str
+    message_count: int
+    last_query: str
+    last_answer: str
+    model_used: str
+    sources: List[DocumentSource]
 
 
 class ThreadListResponse(BaseModel):

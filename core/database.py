@@ -56,7 +56,8 @@ def init_db() -> None:
                         id VARCHAR(50) PRIMARY KEY,
                         workspace_id VARCHAR(50) REFERENCES workspaces(id) ON DELETE CASCADE,
                         title TEXT NOT NULL,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """)
                 cur.execute("""
@@ -255,17 +256,61 @@ def get_thread(thread_id: str) -> Optional[dict]:
 
 
 def get_workspace_threads(workspace_id: str) -> List[dict]:
-    """Retrieves all conversation threads for a workspace, ordered by most recent."""
+    """Retrieves all conversation threads for a workspace, ordered by most recently active."""
     threads = []
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, title, created_at FROM threads WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 50;",
+                    """
+                    SELECT t.id, t.title, t.created_at, t.updated_at,
+                           (SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id) as msg_count
+                    FROM threads t
+                    WHERE t.workspace_id = %s
+                    ORDER BY t.updated_at DESC LIMIT 50;
+                    """,
                     (workspace_id,),
                 )
-                for row in cur.fetchall():
-                    threads.append({"id": row[0], "title": row[1], "created_at": str(row[2])})
+                thread_rows = cur.fetchall()
+                for row in thread_rows:
+                    t_id = row[0]
+
+                    # Get latest user query
+                    cur.execute(
+                        "SELECT content FROM messages WHERE thread_id = %s AND role = 'user' ORDER BY created_at DESC LIMIT 1;",
+                        (t_id,),
+                    )
+                    u_row = cur.fetchone()
+                    last_query = u_row[0] if isinstance(u_row, tuple) else row[1]
+
+                    # Get latest assistant answer & metadata
+                    cur.execute(
+                        "SELECT content, model_used, sources FROM messages WHERE thread_id = %s AND role = 'assistant' ORDER BY created_at DESC LIMIT 1;",
+                        (t_id,),
+                    )
+                    a_row = cur.fetchone()
+                    if isinstance(a_row, tuple):
+                        last_answer = a_row[0]
+                        model_used = a_row[1]
+                        sources = a_row[2] if a_row[2] else []
+                    else:
+                        last_answer = "No response recorded."
+                        model_used = "unknown"
+                        sources = []
+
+                    threads.append(
+                        {
+                            "id": t_id,
+                            "title": row[1],
+                            "created_at": str(row[2]),
+                            "updated_at": str(row[3]),
+                            "message_count": row[4],
+                            "last_query": last_query,
+                            "last_answer": last_answer,
+                            "model_used": model_used,
+                            "sources": sources,
+                        }
+                    )
         return threads
     except Exception as e:
         logger.error(f"Database error fetching threads for workspace {workspace_id}: {e}")
@@ -291,6 +336,10 @@ def add_message(
                         Jsonb(sources) if sources is not None else None,
                         model_used,
                     ),
+                )
+                cur.execute(
+                    "UPDATE threads SET updated_at = CURRENT_TIMESTAMP WHERE id = %s;",
+                    (thread_id,),
                 )
     except Exception as e:
         logger.error(f"Database error saving message to thread {thread_id}: {e}")

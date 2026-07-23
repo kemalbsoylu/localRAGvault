@@ -15,18 +15,25 @@ st.title("🗄️ localRAGvault")
 st.markdown("Your privacy-first, fully local document assistant.")
 
 # --- Session State Initialization ---
-if "search_history" not in st.session_state:
-    st.session_state.search_history = []
 if "is_processing" not in st.session_state:
     st.session_state.is_processing = False
 if "current_query" not in st.session_state:
     st.session_state.current_query = ""
 if "active_thread_id" not in st.session_state:
     st.session_state.active_thread_id = None
+if "selected_gen_model" not in st.session_state:
+    st.session_state.selected_gen_model = DEFAULT_GENERATION_MODEL
+if "pending_workspace" not in st.session_state:
+    st.session_state.pending_workspace = None
+if "pending_upload" not in st.session_state:
+    st.session_state.pending_upload = None
+if "upload_success_msg" not in st.session_state:
+    st.session_state.upload_success_msg = None
+if "file_uploader_key" not in st.session_state:
+    st.session_state.file_uploader_key = 0
 
 
 def get_error_msg(response: requests.Response) -> str:
-    """Safely extracts FastAPI HTTPException detail messages."""
     try:
         return response.json().get("detail", response.text)
     except Exception:
@@ -54,25 +61,31 @@ def fetch_workspaces():
     return []
 
 
-# --- Data Loading ---
+def fetch_workspace_threads(workspace_id: str):
+    try:
+        res = requests.get(f"{API_URL}/workspaces/{workspace_id}/threads")
+        if res.status_code == 200:
+            return res.json().get("threads", [])
+    except requests.exceptions.ConnectionError:
+        pass
+    return []
+
+
 available_models = fetch_available_models()
 workspaces = fetch_workspaces()
 
 embedding_options = [m for m in available_models if "embed" in m] or [DEFAULT_EMBEDDING_MODEL]
 generation_options = [m for m in available_models if "embed" not in m] or [DEFAULT_GENERATION_MODEL]
-
 default_embed_idx = next(
     (i for i, m in enumerate(embedding_options) if m == DEFAULT_EMBEDDING_MODEL), 0
 )
 default_gen_idx = next(
-    (i for i, m in enumerate(generation_options) if m == DEFAULT_GENERATION_MODEL), 0
+    (i for i, m in enumerate(generation_options) if m == st.session_state.selected_gen_model), 0
 )
 
-# --- Sidebar ---
+# --- Sidebar (Workspaces & Document Ingestion) ---
 with st.sidebar:
     st.header("Workspaces")
-
-    # Workspace Selection
     active_workspace = None
     if workspaces:
         ws_options = {ws["id"]: f"{ws['name']} ({ws['embedding_model']})" for ws in workspaces}
@@ -86,70 +99,64 @@ with st.sidebar:
     else:
         st.warning("No workspaces found. Create one below to begin.")
 
-    # Workspace Creation
+    # Workspace Creation Form
     with st.expander("➕ Create New Workspace", expanded=not workspaces):
         with st.form("create_workspace_form"):
-            new_ws_name = st.text_input("Workspace Name", placeholder="e.g., Financial Reports")
+            new_ws_name = st.text_input(
+                "Workspace Name",
+                placeholder="e.g., Financial Reports",
+                disabled=st.session_state.is_processing,
+            )
             new_ws_embed = st.selectbox(
-                "Embedding Model", options=embedding_options, index=default_embed_idx
+                "Embedding Model",
+                options=embedding_options,
+                index=default_embed_idx,
+                disabled=st.session_state.is_processing,
+            )
+            submit_workspace = st.form_submit_button(
+                "Create & Lock Dimensions", disabled=st.session_state.is_processing
             )
 
-            if st.form_submit_button(
-                "Create & Lock Dimensions", disabled=st.session_state.is_processing
-            ):
+            if submit_workspace:
                 if not new_ws_name.strip():
                     st.error("Workspace name cannot be empty.")
                 else:
-                    try:
-                        res = requests.post(
-                            f"{API_URL}/workspaces/",
-                            json={"name": new_ws_name, "embedding_model": new_ws_embed},
-                        )
-                        if res.status_code == 200:
-                            st.success(f"Workspace locked to {res.json()['dimension']} dimensions!")
-                            st.rerun()
-                        else:
-                            st.error(f"Error: {get_error_msg(res)}")
-                    except requests.exceptions.ConnectionError:
-                        st.error("Backend unreachable. Is FastAPI running?")
+                    st.session_state.is_processing = True
+                    st.session_state.pending_workspace = {
+                        "name": new_ws_name,
+                        "embedding_model": new_ws_embed,
+                    }
+                    st.rerun()
 
-    st.markdown("---")
-    st.header("⚙️ Generation LLM")
-    selected_gen_model = st.selectbox(
-        "Select LLM",
-        options=generation_options,
-        index=default_gen_idx,
-        help="The language model that reads context and writes replies.",
-        disabled=st.session_state.is_processing,
-    )
-
-    # Contextual controls (Only visible if a workspace is selected)
     if active_workspace:
         st.markdown("---")
         st.header("Add to Vault")
-        with st.form("upload_form", clear_on_submit=True):
-            uploaded_file = st.file_uploader("Upload a .txt or .md file", type=["txt", "md"])
+
+        if st.session_state.upload_success_msg:
+            st.success(st.session_state.upload_success_msg)
+            st.session_state.upload_success_msg = None
+
+        with st.form("upload_form"):
+            # Dynamically reset file uploader via state-managed key counter
+            uploaded_file = st.file_uploader(
+                "Upload a .txt or .md file",
+                type=["txt", "md"],
+                disabled=st.session_state.is_processing,
+                key=f"file_uploader_{st.session_state.file_uploader_key}",
+            )
             submit_upload = st.form_submit_button(
                 "Ingest Document", disabled=st.session_state.is_processing
             )
 
             if submit_upload and uploaded_file is not None:
-                files = {"file": (uploaded_file.name, uploaded_file.getvalue(), "text/plain")}
-                data = {
+                st.session_state.is_processing = True
+                st.session_state.pending_upload = {
+                    "filename": uploaded_file.name,
+                    "content": uploaded_file.getvalue(),
                     "workspace_id": active_workspace["id"],
                     "embedding_model": active_workspace["embedding_model"],
                 }
-                try:
-                    res = requests.post(f"{API_URL}/upload/", files=files, data=data)
-                    if res.status_code == 200:
-                        res_data = res.json()
-                        st.success(
-                            f"✅ {res_data['chunks_saved']} chunks saved to {active_workspace['name']}."
-                        )
-                    else:
-                        st.error(f"Upload failed: {get_error_msg(res)}")
-                except requests.exceptions.ConnectionError:
-                    st.error("Backend unreachable.")
+                st.rerun()
             elif submit_upload:
                 st.warning("Please select a file first.")
 
@@ -176,6 +183,52 @@ with st.sidebar:
 
 
 # =====================================================================
+# --- BACKGROUND API EXECUTION ---
+# =====================================================================
+
+if st.session_state.pending_workspace:
+    pw = st.session_state.pending_workspace
+    st.session_state.pending_workspace = None
+    with st.spinner(f"Probing model and initializing workspace '{pw['name']}'..."):
+        try:
+            res = requests.post(
+                f"{API_URL}/workspaces/",
+                json={"name": pw["name"], "embedding_model": pw["embedding_model"]},
+            )
+            if res.status_code == 200:
+                st.success(f"Workspace locked to {res.json()['dimension']} dimensions!")
+            else:
+                st.error(f"Error: {get_error_msg(res)}")
+        except requests.exceptions.ConnectionError:
+            st.error("Backend unreachable. Is FastAPI running?")
+    st.session_state.is_processing = False
+    st.rerun()
+
+if st.session_state.pending_upload:
+    pu = st.session_state.pending_upload
+    st.session_state.pending_upload = None
+    with st.spinner(f"Ingesting '{pu['filename']}' and calculating vector embeddings..."):
+        files = {"file": (pu["filename"], pu["content"], "text/plain")}
+        data = {
+            "workspace_id": pu["workspace_id"],
+            "embedding_model": pu["embedding_model"],
+        }
+        try:
+            res = requests.post(f"{API_URL}/upload/", files=files, data=data)
+            if res.status_code == 200:
+                res_data = res.json()
+                st.session_state.upload_success_msg = f"✅ Success! {res_data['chunks_saved']} chunks saved for {res_data['filename']}."
+                # Increment key counter to completely clear out the file uploader widget
+                st.session_state.file_uploader_key += 1
+            else:
+                st.error(f"Upload failed: {get_error_msg(res)}")
+        except requests.exceptions.ConnectionError:
+            st.error("Backend unreachable.")
+    st.session_state.is_processing = False
+    st.rerun()
+
+
+# =====================================================================
 # --- MAIN CONTENT AREA: VIEW SWITCHER (Search Mode vs. Chat Mode) ---
 # =====================================================================
 
@@ -188,8 +241,9 @@ elif st.session_state.active_thread_id:
     with col1:
         st.header("💬 Active Conversation")
     with col2:
-        # Button to exit chat mode and return to normal vault search
-        if st.button("⬅️ Back to Search", use_container_width=True):
+        if st.button(
+            "⬅️ Back to Search", use_container_width=True, disabled=st.session_state.is_processing
+        ):
             st.session_state.active_thread_id = None
             st.rerun()
 
@@ -198,14 +252,19 @@ elif st.session_state.active_thread_id:
     )
     st.markdown("---")
 
-    # 1. Fetch and render message history from the backend DB
+    # Fetch and render message history from DB
     try:
         res = requests.get(f"{API_URL}/threads/{st.session_state.active_thread_id}/messages")
         if res.status_code == 200:
             history_data = res.json().get("messages", [])
             for msg in history_data:
-                with st.chat_message(msg["role"]):
+                icon = "👤" if msg["role"] == "user" else "🤖"
+                with st.chat_message(msg["role"], avatar=icon):
                     st.markdown(msg["content"])
+                    if msg["role"] == "assistant":
+                        st.caption(
+                            f"✨ Generated by `{msg['model_used']}` | 🔎 Searched with `{active_workspace['embedding_model']}`"
+                        )
                     if msg.get("sources"):
                         with st.expander("📚 Sources Cited"):
                             for s in msg["sources"]:
@@ -217,43 +276,77 @@ elif st.session_state.active_thread_id:
     except requests.exceptions.ConnectionError:
         st.error("Backend unreachable.")
 
-    # 2. Native Chat Input for follow-up questions
-    if follow_up_query := st.chat_input("Ask a follow-up question..."):
-        with st.chat_message("user"):
-            st.markdown(follow_up_query)
+    st.markdown("---")
+    col_model, _ = st.columns([4, 6])
+    with col_model:
+        st.session_state.selected_gen_model = st.selectbox(
+            "⚙️ Generation LLM:",
+            options=generation_options,
+            index=default_gen_idx,
+            help="Switch generation model on the fly during this conversation.",
+            disabled=st.session_state.is_processing,
+            key="chat_llm_select",
+        )
 
-        with st.chat_message("assistant"):
+    # Native Chat Input
+    if follow_up_query := st.chat_input(
+        "Ask a follow-up question...", disabled=st.session_state.is_processing
+    ):
+        st.session_state.is_processing = True
+        st.session_state.current_query = follow_up_query
+        st.rerun()
+
+    if (
+        st.session_state.is_processing
+        and st.session_state.current_query
+        and st.session_state.active_thread_id
+    ):
+        with st.chat_message("user", avatar="👤"):
+            st.markdown(st.session_state.current_query)
+
+        with st.chat_message("assistant", avatar="🤖"):
             with st.spinner("Thinking and checking vault..."):
                 payload = {
                     "workspace_id": active_workspace["id"],
-                    "query": follow_up_query,
-                    "thread_id": st.session_state.active_thread_id,  # Passes thread_id to continue context!
+                    "query": st.session_state.current_query,
+                    "thread_id": st.session_state.active_thread_id,
                     "top_k": 3,
                     "embedding_model": active_workspace["embedding_model"],
-                    "generation_model": selected_gen_model,
+                    "generation_model": st.session_state.selected_gen_model,
                 }
                 try:
                     res = requests.post(f"{API_URL}/ask/", json=payload)
-                    if res.status_code == 200:
-                        res_data = res.json()
-                        st.markdown(res_data["answer"])
-                        if res_data["sources"]:
-                            with st.expander("📚 Sources Cited"):
-                                for s in res_data["sources"]:
-                                    st.markdown(
-                                        f"- 📄 **{s['filename']}** (Similarity: {s['similarity']})"
-                                    )
-                    else:
+                    if res.status_code != 200:
                         st.error(f"Error: {get_error_msg(res)}")
                 except requests.exceptions.ConnectionError:
                     st.error("Backend unreachable.")
-        # Rerun to cleanly re-render from database history
+
+        st.session_state.is_processing = False
+        st.session_state.current_query = ""
         st.rerun()
 
 
 # VIEW 2: STANDARD VAULT SEARCH VIEW
 else:
     st.header("Search your Vault")
+
+    st.caption(
+        f"**Active Workspace:** `{active_workspace['name']}` | "
+        f"**Embedding Model:** `{active_workspace['embedding_model']}` | "
+        f"**Vector Dimensions:** `{active_workspace['dimension']}`"
+    )
+
+    col_model, _ = st.columns([4, 6])
+    with col_model:
+        st.session_state.selected_gen_model = st.selectbox(
+            "⚙️ Generation LLM:",
+            options=generation_options,
+            index=default_gen_idx,
+            help="The language model that processes context and writes replies.",
+            disabled=st.session_state.is_processing,
+            key="search_llm_select",
+        )
+
     with st.form(key="search_form"):
         query = st.text_input(
             "What would you like to know?",
@@ -276,59 +369,55 @@ else:
                 "query": st.session_state.current_query,
                 "top_k": 3,
                 "embedding_model": active_workspace["embedding_model"],
-                "generation_model": selected_gen_model,
+                "generation_model": st.session_state.selected_gen_model,
             }
             try:
                 res = requests.post(f"{API_URL}/ask/", json=payload)
-                if res.status_code == 200:
-                    res_data = res.json()
-                    st.session_state.search_history.insert(
-                        0,
-                        {
-                            "thread_id": res_data["thread_id"],
-                            "query": st.session_state.current_query,
-                            "answer": res_data["answer"],
-                            "sources": res_data["sources"],
-                            "gen_model": res_data["generation_model"],
-                            "embed_model": res_data["embedding_model"],
-                        },
-                    )
-                else:
+                if res.status_code != 200:
                     st.error(f"Error generating answer: {get_error_msg(res)}")
             except requests.exceptions.ConnectionError:
                 st.error("Backend is unreachable. Is FastAPI running?")
 
-        # Reset processing flag and clear current query cache
         st.session_state.is_processing = False
         st.session_state.current_query = ""
         st.rerun()
 
     st.markdown("---")
 
-    # Render Search Cards with "Start Conversation" Button
-    for result in st.session_state.search_history:
-        with st.container(border=True):
-            st.markdown(f"**🔍 Query:** {result['query']}")
-            st.info(result["answer"])
+    threads = fetch_workspace_threads(active_workspace["id"])
+    if not threads:
+        st.info("No conversations yet. Ask a question above to start searching!")
+    else:
+        for t in threads:
+            with st.container(border=True):
+                st.subheader(f"💬 {t['title']}")
 
-            col1, col2 = st.columns([7, 3])
-            with col1:
-                st.caption(
-                    f"✨ Generated by `{result['gen_model']}` | 🔎 Searched with `{result['embed_model']}`"
-                )
-            with col2:
-                # THE MAGIC BUTTON: Switches view and binds active thread
-                if st.button(
-                    "💬 Continue in Chat",
-                    key=f"btn_{result['thread_id']}",
-                    use_container_width=True,
-                ):
-                    st.session_state.active_thread_id = result["thread_id"]
-                    st.rerun()
+                st.markdown(f"**👤 Latest Query:** {t['last_query']}")
+                st.info(f"**🤖 Latest Reply:** {t['last_answer']}")
 
-            if result["sources"]:
-                with st.expander("View Sources Cited"):
-                    for source in result["sources"]:
-                        st.markdown(
-                            f"- 📄 **{source['filename']}** (Similarity: {source['similarity']})"
-                        )
+                col1, col2 = st.columns([7, 3])
+                with col1:
+                    last_active_str = (
+                        t["updated_at"][:16].replace("T", " ")
+                        if "T" in t["updated_at"]
+                        else t["updated_at"][:16]
+                    )
+                    st.caption(
+                        f"✨ Generated by `{t['model_used']}` | 🕒 Last Active: `{last_active_str}` | 💬 **{t['message_count']} messages** in thread"
+                    )
+                with col2:
+                    if st.button(
+                        "💬 Open Conversation",
+                        key=f"btn_{t['id']}",
+                        use_container_width=True,
+                        disabled=st.session_state.is_processing,
+                    ):
+                        st.session_state.active_thread_id = t["id"]
+                        st.rerun()
+
+                if t.get("sources"):
+                    with st.expander("View Sources Cited in Latest Reply"):
+                        for source in t["sources"]:
+                            st.markdown(
+                                f"- 📄 **{source['filename']}** (Similarity: {source['similarity']})"
+                            )

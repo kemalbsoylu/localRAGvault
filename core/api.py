@@ -150,7 +150,20 @@ def list_workspace_threads(workspace_id: str) -> ThreadListResponse:
             logger.warning(f"Thread listing failed: Workspace '{workspace_id}' not found.")
             raise HTTPException(status_code=404, detail="Workspace not found.")
         raw_threads = get_workspace_threads(workspace_id)
-        threads = [ThreadCard(**t) for t in raw_threads]
+        threads = [
+            ThreadCard(
+                id=t["id"],
+                title=t["title"],
+                created_at=t["created_at"],
+                updated_at=t["updated_at"],
+                message_count=t["message_count"],
+                last_query=t["last_query"],
+                last_answer=t["last_answer"],
+                model_used=t["model_used"],
+                sources=[DocumentSource(**s) for s in t["sources"]] if t["sources"] else [],
+            )
+            for t in raw_threads
+        ]
         return ThreadListResponse(workspace_id=workspace_id, threads=threads)
     except HTTPException:
         raise
