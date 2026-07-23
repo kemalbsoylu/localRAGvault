@@ -59,16 +59,22 @@ def generate_answer(
     context_text = "\n---\n".join(context_chunks)
     fallback_msg = "I cannot answer this based on the provided documents."
 
-    prompt = f"""You are a helpful, precise assistant. Answer the user's question using ONLY the provided context. 
-If the answer is not contained in the context, say exactly: "{fallback_msg}" Do not use outside knowledge.
+    prompt = f"""You are a knowledgeable, analytical assistant for a private document vault.
+Your task is to answer the user's question by synthesizing and explaining the information found in the provided context chunks.
 
-Context:
+### Strict Operating Rules:
+1. Ground your reasoning strictly in the provided context. Do NOT use outside knowledge or assume facts not directly supported by the text.
+2. Synthesize and explain the concepts in clear, natural language—do not simply copy-paste raw sentences verbatim unless quoting specific data or technical terms.
+3. If the context contains relevant information that only partially answers the question, explain what the documents reveal and explicitly note what details are missing.
+4. If the provided context is completely irrelevant or does not contain any information to answer the question, respond EXACTLY with this string: "{fallback_msg}"
+
+### Retrieved Context:
 {context_text}
 
-Question:
+### User Question:
 {query}
 
-Answer:"""
+### Answer:"""
 
     try:
         response = ollama.generate(model=target_model, prompt=prompt)
