@@ -7,10 +7,15 @@ from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
 from core.config import DEFAULT_EMBEDDING_MODEL
 from core.database import (
+    add_message,
+    create_thread,
     create_workspace,
     fetch_workspace_inventory,
     get_all_workspaces,
+    get_thread,
+    get_thread_messages,
     get_workspace,
+    get_workspace_threads,
     init_db,
     insert_document_chunks,
     search_vector_db,
@@ -20,10 +25,14 @@ from core.schemas import (
     DocumentInventoryItem,
     DocumentSource,
     IngestionResponse,
+    MessageCard,
     ModelListResponse,
     RAGQueryResponse,
     SearchQuery,
     SearchResultCard,
+    ThreadCard,
+    ThreadHistoryResponse,
+    ThreadListResponse,
     VectorSearchResponse,
     WorkspaceCreate,
     WorkspaceInventoryResponse,
@@ -69,10 +78,13 @@ def list_models() -> ModelListResponse:
         models = get_available_models()
         return ModelListResponse(status="success" if models else "error", models=models)
     except Exception as e:
-        logger.error(f"Error fetching models: {e}")
+        logger.error(f"Error fetching models from Ollama daemon: {e}")
         raise HTTPException(
             status_code=500, detail="Failed to fetch available models from Ollama."
         ) from e
+
+
+# --- WORKSPACE ENDPOINTS ---
 
 
 @app.get("/workspaces/", response_model=List[WorkspaceResponse])
@@ -124,6 +136,58 @@ def create_new_workspace(ws: WorkspaceCreate) -> WorkspaceResponse:
     return WorkspaceResponse(
         id=workspace_id, name=ws.name, embedding_model=ws.embedding_model, dimension=dimension
     )
+
+
+# --- CONVERSATION ENDPOINTS ---
+
+
+@app.get("/workspaces/{workspace_id}/threads", response_model=ThreadListResponse)
+def list_workspace_threads(workspace_id: str) -> ThreadListResponse:
+    """Returns a list of all conversation threads inside a workspace."""
+    try:
+        ws = get_workspace(workspace_id)
+        if not ws:
+            logger.warning(f"Thread listing failed: Workspace '{workspace_id}' not found.")
+            raise HTTPException(status_code=404, detail="Workspace not found.")
+        raw_threads = get_workspace_threads(workspace_id)
+        threads = [ThreadCard(**t) for t in raw_threads]
+        return ThreadListResponse(workspace_id=workspace_id, threads=threads)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching threads for workspace {workspace_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch conversation threads.") from e
+
+
+@app.get("/threads/{thread_id}/messages", response_model=ThreadHistoryResponse)
+def get_thread_history(thread_id: str) -> ThreadHistoryResponse:
+    """Returns the full chronological message history for a specific thread."""
+    try:
+        t = get_thread(thread_id)
+        if not t:
+            logger.warning(f"Message history fetch failed: Thread '{thread_id}' not found.")
+            raise HTTPException(status_code=404, detail="Thread not found.")
+        raw_messages = get_thread_messages(thread_id, limit=50)
+        messages = [
+            MessageCard(
+                id=m["id"],
+                role=m["role"],
+                content=m["content"],
+                sources=[DocumentSource(**s) for s in m["sources"]] if m["sources"] else [],
+                model_used=m["model_used"],
+                created_at=m["created_at"],
+            )
+            for m in raw_messages
+        ]
+        return ThreadHistoryResponse(thread_id=thread_id, messages=messages)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching messages for thread {thread_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch message history.") from e
+
+
+# --- VAULT & RAG ENDPOINTS ---
 
 
 @app.get("/inventory/{workspace_id}", response_model=WorkspaceInventoryResponse)
@@ -311,6 +375,30 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
             detail=f"Request embedding model must match workspace: '{ws['embedding_model']}'.",
         )
 
+    # 1. Thread Management: Resolve existing thread or create a new one
+    thread_id = search.thread_id
+    chat_history = []
+    try:
+        if thread_id:
+            if not get_thread(thread_id):
+                logger.warning(f"Ask aborted: Thread '{thread_id}' not found.")
+                raise HTTPException(status_code=404, detail=f"Thread '{thread_id}' not found.")
+            # Load previous turns to pass to the LLM for conversational awareness
+            chat_history = get_thread_messages(thread_id, limit=6)
+            logger.info(f"Loaded {len(chat_history)} historical messages for thread {thread_id}.")
+        else:
+            thread_id = str(uuid.uuid4())
+            title = search.query[:40] + ("..." if len(search.query) > 40 else "")
+            create_thread(thread_id=thread_id, workspace_id=search.workspace_id, title=title)
+            logger.info(f"Created new conversation thread '{thread_id}' with title '{title}'.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Database error during thread management: {e}")
+        raise HTTPException(
+            status_code=500, detail="Internal server error managing chat session."
+        ) from e
+
     try:
         query_embedding = get_embedding(search.query, model_name=search.embedding_model)
         if not query_embedding:
@@ -331,8 +419,17 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
 
         if not retrieved_chunks:
             logger.info("No matching contextual chunks found inside the vault.")
+            add_message(thread_id, "user", search.query, search.generation_model)
+            add_message(
+                thread_id,
+                "assistant",
+                "No relevant documents found in the vault.",
+                search.generation_model,
+                sources=[],
+            )
             return RAGQueryResponse(
                 workspace_id=search.workspace_id,
+                thread_id=thread_id,
                 query=search.query,
                 answer="No relevant documents found in the vault.",
                 generation_model=search.generation_model,
@@ -340,16 +437,31 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
                 sources=[],
             )
 
+        # 2. Execute LLM with retrieved context AND chat history
         llm_response = generate_answer(
-            query=search.query, context_chunks=retrieved_chunks, model_name=search.generation_model
+            query=search.query,
+            context_chunks=retrieved_chunks,
+            model_name=search.generation_model,
+            chat_history=chat_history,
         )
 
         if not llm_response.is_valid:
             logger.info("LLM returned context failure warning. Hiding document references.")
             sources = []
 
+        # 3. Persist turns to Database
+        add_message(thread_id, "user", search.query, search.generation_model)
+        add_message(
+            thread_id,
+            "assistant",
+            llm_response.text,
+            search.generation_model,
+            sources=[s.model_dump() for s in sources],
+        )
+
         return RAGQueryResponse(
             workspace_id=search.workspace_id,
+            thread_id=thread_id,
             query=search.query,
             answer=llm_response.text,
             generation_model=search.generation_model,

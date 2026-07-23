@@ -2,6 +2,7 @@ from typing import List, Optional, Tuple
 
 import psycopg
 from pgvector.psycopg import register_vector
+from psycopg.types.json import Jsonb
 
 from core.config import DB_HOST, DB_NAME, DB_PASSWORD, DB_PORT, DB_USER
 from core.logging_config import logger
@@ -50,8 +51,27 @@ def init_db() -> None:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS threads (
+                        id VARCHAR(50) PRIMARY KEY,
+                        workspace_id VARCHAR(50) REFERENCES workspaces(id) ON DELETE CASCADE,
+                        title TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS messages (
+                        id SERIAL PRIMARY KEY,
+                        thread_id VARCHAR(50) REFERENCES threads(id) ON DELETE CASCADE,
+                        role VARCHAR(20) NOT NULL,
+                        content TEXT NOT NULL,
+                        sources JSONB NULL,
+                        model_used TEXT NOT NULL,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    );
+                """)
         logger.info(
-            "Database initialized successfully. 'workspaces' and 'documents' tables are ready."
+            "Database initialized successfully. 'workspaces', 'documents', 'threads', and 'messages' tables are ready."
         )
     except Exception as e:
         logger.error(f"Critical error during database schema creation: {e}")
@@ -176,9 +196,7 @@ def fetch_workspace_inventory(workspace_id: str) -> List[dict]:
         raise
 
 
-def search_vector_db(
-    workspace_id: str, query_embedding: List[float], top_k: int
-) -> List[dict]:
+def search_vector_db(workspace_id: str, query_embedding: List[float], top_k: int) -> List[dict]:
     """Performs a vector similarity search against the document chunks."""
     results = []
     try:
@@ -202,6 +220,118 @@ def search_vector_db(
         return results
     except Exception as e:
         logger.error(f"Database error during vector search in workspace {workspace_id}: {e}")
+        raise
+
+
+def create_thread(thread_id: str, workspace_id: str, title: str) -> None:
+    """Creates a new conversation thread inside a workspace."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO threads (id, workspace_id, title) VALUES (%s, %s, %s)",
+                    (thread_id, workspace_id, title),
+                )
+    except Exception as e:
+        logger.error(f"Database error creating thread {thread_id}: {e}")
+        raise
+
+
+def get_thread(thread_id: str) -> Optional[dict]:
+    """Retrieves thread metadata by ID."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, workspace_id, title FROM threads WHERE id = %s", (thread_id,)
+                )
+                row = cur.fetchone()
+                if isinstance(row, tuple):
+                    return {"id": row[0], "workspace_id": row[1], "title": row[2]}
+        return None
+    except Exception as e:
+        logger.error(f"Database error fetching thread {thread_id}: {e}")
+        raise
+
+
+def get_workspace_threads(workspace_id: str) -> List[dict]:
+    """Retrieves all conversation threads for a workspace, ordered by most recent."""
+    threads = []
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, title, created_at FROM threads WHERE workspace_id = %s ORDER BY created_at DESC LIMIT 50;",
+                    (workspace_id,),
+                )
+                for row in cur.fetchall():
+                    threads.append({"id": row[0], "title": row[1], "created_at": str(row[2])})
+        return threads
+    except Exception as e:
+        logger.error(f"Database error fetching threads for workspace {workspace_id}: {e}")
+        raise
+
+
+def add_message(
+    thread_id: str, role: str, content: str, model_used: str, sources: Optional[list] = None
+) -> None:
+    """Appends a message (user or assistant) to a thread."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO messages (thread_id, role, content, sources, model_used)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (
+                        thread_id,
+                        role,
+                        content,
+                        Jsonb(sources) if sources is not None else None,
+                        model_used,
+                    ),
+                )
+    except Exception as e:
+        logger.error(f"Database error saving message to thread {thread_id}: {e}")
+        raise
+
+
+def get_thread_messages(thread_id: str, limit: int = 10) -> List[dict]:
+    """Retrieves conversation history for a thread in chronological order."""
+    messages = []
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Subquery gets latest N messages, outer query sorts them chronologically (oldest -> newest) for LLM context
+                cur.execute(
+                    """
+                    SELECT id, role, content, sources, model_used, created_at
+                    FROM (
+                        SELECT id, role, content, sources, model_used, created_at
+                        FROM messages
+                        WHERE thread_id = %s
+                        ORDER BY created_at DESC
+                        LIMIT %s
+                    ) sub
+                    ORDER BY created_at ASC;
+                    """,
+                    (thread_id, limit),
+                )
+                for row in cur.fetchall():
+                    messages.append(
+                        {
+                            "id": row[0],
+                            "role": row[1],
+                            "content": row[2],
+                            "sources": row[3] if row[3] else [],
+                            "model_used": row[4],
+                            "created_at": str(row[5]),
+                        }
+                    )
+        return messages
+    except Exception as e:
+        logger.error(f"Database error fetching messages for thread {thread_id}: {e}")
         raise
 
 

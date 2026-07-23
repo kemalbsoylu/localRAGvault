@@ -21,6 +21,8 @@ if "is_processing" not in st.session_state:
     st.session_state.is_processing = False
 if "current_query" not in st.session_state:
     st.session_state.current_query = ""
+if "active_thread_id" not in st.session_state:
+    st.session_state.active_thread_id = None
 
 
 def get_error_msg(response: requests.Response) -> str:
@@ -173,12 +175,85 @@ with st.sidebar:
             st.error("Backend unreachable.")
 
 
-# --- Main Search Window ---
-st.header("Search your Vault")
+# =====================================================================
+# --- MAIN CONTENT AREA: VIEW SWITCHER (Search Mode vs. Chat Mode) ---
+# =====================================================================
 
 if not active_workspace:
-    st.info("👈 Create and select a workspace from the sidebar to begin searching.")
+    st.info("👈 Create and select a workspace from the sidebar to begin.")
+
+# VIEW 1: MULTI-TURN CHAT CONVERSATION VIEW
+elif st.session_state.active_thread_id:
+    col1, col2 = st.columns([8, 2])
+    with col1:
+        st.header("💬 Active Conversation")
+    with col2:
+        # Button to exit chat mode and return to normal vault search
+        if st.button("⬅️ Back to Search", use_container_width=True):
+            st.session_state.active_thread_id = None
+            st.rerun()
+
+    st.caption(
+        f"**Thread ID:** `{st.session_state.active_thread_id}` | **Workspace:** `{active_workspace['name']}`"
+    )
+    st.markdown("---")
+
+    # 1. Fetch and render message history from the backend DB
+    try:
+        res = requests.get(f"{API_URL}/threads/{st.session_state.active_thread_id}/messages")
+        if res.status_code == 200:
+            history_data = res.json().get("messages", [])
+            for msg in history_data:
+                with st.chat_message(msg["role"]):
+                    st.markdown(msg["content"])
+                    if msg.get("sources"):
+                        with st.expander("📚 Sources Cited"):
+                            for s in msg["sources"]:
+                                st.markdown(
+                                    f"- 📄 **{s['filename']}** (Similarity: {s['similarity']})"
+                                )
+        else:
+            st.error(f"Failed to load chat history: {get_error_msg(res)}")
+    except requests.exceptions.ConnectionError:
+        st.error("Backend unreachable.")
+
+    # 2. Native Chat Input for follow-up questions
+    if follow_up_query := st.chat_input("Ask a follow-up question..."):
+        with st.chat_message("user"):
+            st.markdown(follow_up_query)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking and checking vault..."):
+                payload = {
+                    "workspace_id": active_workspace["id"],
+                    "query": follow_up_query,
+                    "thread_id": st.session_state.active_thread_id,  # Passes thread_id to continue context!
+                    "top_k": 3,
+                    "embedding_model": active_workspace["embedding_model"],
+                    "generation_model": selected_gen_model,
+                }
+                try:
+                    res = requests.post(f"{API_URL}/ask/", json=payload)
+                    if res.status_code == 200:
+                        res_data = res.json()
+                        st.markdown(res_data["answer"])
+                        if res_data["sources"]:
+                            with st.expander("📚 Sources Cited"):
+                                for s in res_data["sources"]:
+                                    st.markdown(
+                                        f"- 📄 **{s['filename']}** (Similarity: {s['similarity']})"
+                                    )
+                    else:
+                        st.error(f"Error: {get_error_msg(res)}")
+                except requests.exceptions.ConnectionError:
+                    st.error("Backend unreachable.")
+        # Rerun to cleanly re-render from database history
+        st.rerun()
+
+
+# VIEW 2: STANDARD VAULT SEARCH VIEW
 else:
+    st.header("Search your Vault")
     with st.form(key="search_form"):
         query = st.text_input(
             "What would you like to know?",
@@ -210,6 +285,7 @@ else:
                     st.session_state.search_history.insert(
                         0,
                         {
+                            "thread_id": res_data["thread_id"],
                             "query": st.session_state.current_query,
                             "answer": res_data["answer"],
                             "sources": res_data["sources"],
@@ -229,14 +305,26 @@ else:
 
     st.markdown("---")
 
-    # Render History
+    # Render Search Cards with "Start Conversation" Button
     for result in st.session_state.search_history:
         with st.container(border=True):
             st.markdown(f"**🔍 Query:** {result['query']}")
             st.info(result["answer"])
-            st.caption(
-                f"✨ Generated by `{result['gen_model']}` | 🔎 Searched with `{result['embed_model']}`"
-            )
+
+            col1, col2 = st.columns([7, 3])
+            with col1:
+                st.caption(
+                    f"✨ Generated by `{result['gen_model']}` | 🔎 Searched with `{result['embed_model']}`"
+                )
+            with col2:
+                # THE MAGIC BUTTON: Switches view and binds active thread
+                if st.button(
+                    "💬 Continue in Chat",
+                    key=f"btn_{result['thread_id']}",
+                    use_container_width=True,
+                ):
+                    st.session_state.active_thread_id = result["thread_id"]
+                    st.rerun()
 
             if result["sources"]:
                 with st.expander("View Sources Cited"):

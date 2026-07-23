@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import ollama
 
@@ -52,26 +52,40 @@ def get_embedding(text: str, model_name: str = DEFAULT_EMBEDDING_MODEL) -> List[
 
 
 def generate_answer(
-    query: str, context_chunks: List[str], model_name: str = DEFAULT_GENERATION_MODEL
+    query: str,
+    context_chunks: List[str],
+    model_name: str = DEFAULT_GENERATION_MODEL,
+    chat_history: Optional[List[dict]] = None,
 ) -> LLMInternalResponse:
-    """Sends the retrieved context and user query to the local LLM using a strict validation gate."""
+    """Sends the retrieved context, chat history, and user query to the local LLM using a strict validation gate."""
     target_model = normalize_model_name(model_name)
     context_text = "\n---\n".join(context_chunks)
     fallback_msg = "I cannot answer this based on the provided documents."
 
+    history_block = ""
+    if chat_history:
+        formatted_turns = []
+        for msg in chat_history:
+            role_label = "User" if msg["role"] == "user" else "Assistant"
+            formatted_turns.append(f"{role_label}: {msg['content']}")
+        if formatted_turns:
+            history_str = "\n".join(formatted_turns)
+            history_block = f"\n### Previous Conversation History:\n{history_str}\n"
+
     prompt = f"""You are a knowledgeable, analytical assistant for a private document vault.
-Your task is to answer the user's question by synthesizing and explaining the information found in the provided context chunks.
+Your task is to answer the user's question by synthesizing and explaining the information found in the provided context chunks and previous conversation history.
 
 ### Strict Operating Rules:
-1. Ground your reasoning strictly in the provided context. Do NOT use outside knowledge or assume facts not directly supported by the text.
+1. Ground your reasoning strictly in the provided context and conversation history. Do NOT use outside knowledge or assume facts not directly supported by the text.
 2. Synthesize and explain the concepts in clear, natural language—do not simply copy-paste raw sentences verbatim unless quoting specific data or technical terms.
-3. If the context contains relevant information that only partially answers the question, explain what the documents reveal and explicitly note what details are missing.
-4. If the provided context is completely irrelevant or does not contain any information to answer the question, respond EXACTLY with this string: "{fallback_msg}"
-
-### Retrieved Context:
+3. If the user is asking a follow-up question, use the Previous Conversation History to understand the context of their request.
+4. If the context contains relevant information that only partially answers the question, explain what the documents reveal and explicitly note what details are missing.
+5. If the provided context is completely irrelevant or does not contain any information to answer the question, respond EXACTLY with this string: "{fallback_msg}"
+{history_block}
+### Retrieved Document Context:
 {context_text}
 
-### User Question:
+### Current User Question:
 {query}
 
 ### Answer:"""
