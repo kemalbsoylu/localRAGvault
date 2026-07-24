@@ -216,9 +216,7 @@ if st.session_state.pending_upload:
             res = requests.post(f"{API_URL}/upload/", files=files, data=data)
             if res.status_code == 200:
                 res_data = res.json()
-                st.session_state.upload_success_msg = (
-                    f"✅ Success! {res_data['chunks_saved']} chunks saved for '{res_data['filename']}'."
-                )
+                st.session_state.upload_success_msg = f"✅ Success! {res_data['chunks_saved']} chunks saved for '{res_data['filename']}'."
                 st.session_state.file_uploader_key += 1
             else:
                 st.error(f"Upload failed: {get_error_msg(res)}")

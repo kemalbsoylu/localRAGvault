@@ -1,3 +1,5 @@
+import os
+import shutil
 from pathlib import Path
 from typing import List, Optional
 
@@ -186,3 +188,28 @@ def save_physical_file(workspace_id: str, filename: str, content_bytes: bytes) -
         f.write(content_bytes)
 
     return physical_file_path
+
+
+def delete_workspace_files(workspace_id: str) -> None:
+    """Removes the entire physical workspace directory and all its contents from disk."""
+    workspace_dir = UPLOAD_DIR / workspace_id
+    try:
+        if workspace_dir.exists():
+            shutil.rmtree(workspace_dir, ignore_errors=True)
+            logger.info(f"Physical directory removed from disk: {workspace_dir}")
+    except Exception as e:
+        logger.error(f"Failed to delete physical directory '{workspace_dir}': {e}")
+
+
+def delete_physical_file(workspace_id: str, filename: str) -> bool:
+    """Removes a specific physical file from the workspace directory on disk."""
+    file_path = UPLOAD_DIR / workspace_id / filename
+    try:
+        if file_path.exists():
+            os.remove(file_path)
+            logger.info(f"Physical file removed from disk: {file_path}")
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Failed to delete physical file '{file_path}': {e}")
+        raise

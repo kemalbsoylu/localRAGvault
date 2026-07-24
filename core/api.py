@@ -10,6 +10,8 @@ from core.database import (
     add_message,
     create_thread,
     create_workspace,
+    delete_document,
+    delete_workspace,
     fetch_workspace_inventory,
     get_all_workspaces,
     get_thread,
@@ -20,6 +22,7 @@ from core.database import (
     insert_document_chunks,
     search_vector_db,
 )
+from core.extractors import extract_text_from_file
 from core.logging_config import logger
 from core.schemas import (
     DocumentInventoryItem,
@@ -40,6 +43,8 @@ from core.schemas import (
 )
 from core.utils import (
     chunk_text,
+    delete_physical_file,
+    delete_workspace_files,
     ensure_default_models_exist,
     generate_answer,
     get_available_models,
@@ -235,10 +240,12 @@ async def upload_document(
     file: UploadFile = File(...),
     embedding_model: str = Form(DEFAULT_EMBEDDING_MODEL),
 ) -> IngestionResponse:
-    if not file.filename or not file.filename.endswith((".txt", ".md")):
-        logger.warning(f"Rejected malicious or invalid file upload attempt: {file.filename}")
+    supported_extensions = (".txt", ".md", ".pdf", ".docx", ".csv", ".json")
+    if not file.filename or not file.filename.lower().endswith(supported_extensions):
+        logger.warning(f"Rejected unsupported file upload attempt: {file.filename}")
         raise HTTPException(
-            status_code=400, detail="Only .txt and .md files are supported for now."
+            status_code=400,
+            detail=f"Unsupported file type. Supported extensions: {', '.join(supported_extensions)}",
         )
 
     try:
@@ -264,12 +271,28 @@ async def upload_document(
             detail=f"Model mismatch! Workspace '{ws['name']}' is permanently locked to '{ws['embedding_model']}'.",
         )
 
+    # Clean Upsert: Remove existing vector chunks if re-uploading an existing document name
+    try:
+        old_chunks = delete_document(workspace_id, file.filename)
+        if old_chunks > 0:
+            logger.info(
+                f"Clean upsert triggered: Removed {old_chunks} existing vector chunks for '{file.filename}'."
+            )
+    except Exception as e:
+        logger.error(f"Database failure during clean upsert cleanup for {file.filename}: {e}")
+        raise HTTPException(
+            status_code=500, detail="Database failure during document update cleanup."
+        ) from e
+
     content_bytes = await file.read()
     try:
-        content_text = content_bytes.decode("utf-8")
-    except UnicodeDecodeError as err:
-        logger.error(f"Encoding conversion breakdown during reading: {file.filename}")
-        raise HTTPException(status_code=400, detail="File must be valid UTF-8 text.") from err
+        content_text = extract_text_from_file(content_bytes, file.filename)
+    except ValueError as val_err:
+        logger.warning(f"File extraction failed for '{file.filename}': {val_err}")
+        raise HTTPException(status_code=400, detail=str(val_err)) from val_err
+    except Exception as err:
+        logger.error(f"Unexpected parser failure during extraction for '{file.filename}': {err}")
+        raise HTTPException(status_code=500, detail="Failed to extract text from file.") from err
 
     try:
         physical_file_path = save_physical_file(workspace_id, file.filename, content_bytes)
@@ -487,4 +510,65 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
         logger.error(f"RAG pipeline failure: {e}")
         raise HTTPException(
             status_code=500, detail="Internal server error during RAG generation."
+        ) from e
+
+
+@app.delete("/workspaces/{workspace_id}", response_model=dict)
+def remove_workspace(workspace_id: str) -> dict:
+    """Deletes a workspace, all associated database records (documents, threads, messages), and disk files."""
+    try:
+        deleted = delete_workspace(workspace_id)
+        if not deleted:
+            logger.warning(f"Workspace deletion failed: Workspace '{workspace_id}' not found.")
+            raise HTTPException(status_code=404, detail="Workspace not found.")
+
+        delete_workspace_files(workspace_id)
+        logger.info(f"Workspace '{workspace_id}' completely purged from database and disk.")
+        return {
+            "status": "success",
+            "message": f"Workspace '{workspace_id}' and all associated files deleted.",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting workspace {workspace_id}: {e}")
+        raise HTTPException(
+            status_code=500, detail="Failed to delete workspace from backend."
+        ) from e
+
+
+@app.delete("/documents/{workspace_id}/{filename}", response_model=dict)
+def remove_document(workspace_id: str, filename: str) -> dict:
+    """Deletes a specific document's vector chunks from the database and removes its physical file."""
+    try:
+        ws = get_workspace(workspace_id)
+        if not ws:
+            logger.warning(f"Document deletion failed: Workspace '{workspace_id}' not found.")
+            raise HTTPException(status_code=404, detail="Workspace not found.")
+
+        deleted_chunks = delete_document(workspace_id, filename)
+        file_removed = delete_physical_file(workspace_id, filename)
+
+        if deleted_chunks == 0 and not file_removed:
+            logger.warning(
+                f"Document deletion failed: '{filename}' not found in workspace '{workspace_id}'."
+            )
+            raise HTTPException(status_code=404, detail="Document not found in workspace.")
+
+        logger.info(
+            f"Document '{filename}' purged from workspace '{workspace_id}' ({deleted_chunks} chunks removed)."
+        )
+        return {
+            "status": "success",
+            "workspace_id": workspace_id,
+            "filename": filename,
+            "chunks_deleted": deleted_chunks,
+            "file_removed": file_removed,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting document {filename} from {workspace_id}: {e}")
+        raise HTTPException(
+            status_code=500, detail="Failed to delete document from backend."
         ) from e

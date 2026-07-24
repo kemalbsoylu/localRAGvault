@@ -384,5 +384,35 @@ def get_thread_messages(thread_id: str, limit: int = 10) -> List[dict]:
         raise
 
 
+def delete_workspace(workspace_id: str) -> bool:
+    """Deletes a workspace from the database. Cascade constraints automatically purge child documents and threads."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM workspaces WHERE id = %s RETURNING id;", (workspace_id,))
+                row = cur.fetchone()
+                return row is not None
+    except Exception as e:
+        logger.error(f"Database error while deleting workspace '{workspace_id}': {e}")
+        raise
+
+
+def delete_document(workspace_id: str, filename: str) -> int:
+    """Deletes all vector chunks associated with a specific document in a workspace."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "DELETE FROM documents WHERE workspace_id = %s AND filename = %s;",
+                    (workspace_id, filename),
+                )
+                return cur.rowcount
+    except Exception as e:
+        logger.error(
+            f"Database error deleting document '{filename}' in workspace '{workspace_id}': {e}"
+        )
+        raise
+
+
 if __name__ == "__main__":
     init_db()
