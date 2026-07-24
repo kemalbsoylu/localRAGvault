@@ -44,7 +44,6 @@ def setup_test_database():
             autocommit=True,
         )
         with conn_test.cursor() as cur:
-            # Query the system catalog to see if 'vector' is already installed
             cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
             if not cur.fetchone():
                 try:
@@ -68,14 +67,16 @@ def setup_test_database():
 def clean_database():
     """
     Runs BEFORE AND AFTER EVERY test.
-    Ensures that tests do not pollute each other's vector space.
+    Ensures that tests do not pollute each other's vector space or chat history.
     """
     yield
 
-    # After the test finishes, wipe both tables completely clean
+    # Explicitly truncate all 4 tables with CASCADE to ensure zero state residue
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("TRUNCATE TABLE workspaces, documents RESTART IDENTITY CASCADE;")
+            cur.execute(
+                "TRUNCATE TABLE workspaces, documents, threads, messages RESTART IDENTITY CASCADE;"
+            )
 
 
 @pytest.fixture(scope="session", autouse=True)
