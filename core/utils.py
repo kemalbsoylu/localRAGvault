@@ -55,36 +55,61 @@ def get_embedding(text: str, model_name: str = DEFAULT_EMBEDDING_MODEL) -> List[
 
 def generate_answer(
     query: str,
-    context_chunks: List[str],
+    context_chunks: List[dict],
     model_name: str = DEFAULT_GENERATION_MODEL,
     chat_history: Optional[List[dict]] = None,
 ) -> LLMInternalResponse:
-    """Sends the retrieved context, chat history, and user query to the local LLM using a strict validation gate."""
+    """Sends retrieved context, enriched chat history, and user query to the local LLM using optimized attention placement."""
     target_model = normalize_model_name(model_name)
-    context_text = "\n---\n".join(context_chunks)
     fallback_msg = "I cannot answer this based on the provided documents."
 
+    # 1. Format active context chunks with clear visual boundaries
+    formatted_context_blocks = []
+    for item in context_chunks:
+        block = (
+            f"[Document: {item['filename']} | Chunk #{item.get('chunk_index', '?')}]\n"
+            f"{item['content']}"
+        )
+        formatted_context_blocks.append(block)
+
+    context_text = "\n\n---\n\n".join(formatted_context_blocks)
+
+    # 2. Format conversation history and inject historical source attribution
     history_block = ""
     if chat_history:
         formatted_turns = []
         for msg in chat_history:
             role_label = "User" if msg["role"] == "user" else "Assistant"
-            formatted_turns.append(f"{role_label}: {msg['content']}")
+            turn_text = f"{role_label}: {msg['content']}"
+
+            # Inject historical sources for assistant turns so the LLM remembers its citations
+            if msg["role"] == "assistant" and msg.get("sources"):
+                source_labels = [
+                    f"{s['filename']} (Chunk #{s.get('chunk_index', '?')})"
+                    for s in msg["sources"][:3]
+                ]
+                if source_labels:
+                    turn_text += f"\n  [Cited Documents: {', '.join(source_labels)}]"
+
+            formatted_turns.append(turn_text)
+
         if formatted_turns:
             history_str = "\n".join(formatted_turns)
             history_block = f"\n### Previous Conversation History:\n{history_str}\n"
 
+    # 3. Assemble prompt: Rules -> Memory -> Active Context -> Question (Optimal Causal Order)
     prompt = f"""You are a knowledgeable, analytical assistant for a private document vault.
-Your task is to answer the user's question by synthesizing and explaining the information found in the provided context chunks and previous conversation history.
+Your task is to answer the user's question by synthesizing and explaining information from the provided document chunks and conversation history.
 
 ### Strict Operating Rules:
-1. Ground your reasoning strictly in the provided context and conversation history. Do NOT use outside knowledge or assume facts not directly supported by the text.
-2. Synthesize and explain the concepts in clear, natural language—do not simply copy-paste raw sentences verbatim unless quoting specific data or technical terms.
-3. If the user is asking a follow-up question, use the Previous Conversation History to understand the context of their request.
-4. If the context contains relevant information that only partially answers the question, explain what the documents reveal and explicitly note what details are missing.
-5. If the provided context is completely irrelevant or does not contain any information to answer the question, respond EXACTLY with this string: "{fallback_msg}"
+1. Ground your reasoning strictly in the provided context chunks and conversation history. Do NOT use outside knowledge or assume facts not directly supported by the text.
+2. When referencing information from specific documents, cite the document name inline where appropriate.
+3. Synthesize and explain concepts in clear, natural language—do not copy-paste raw sentences verbatim unless quoting specific data or technical terms.
+4. If the user asks a follow-up question or a meta-question about previous answers (e.g., "which document did you find that in?", "can you summarize what we just discussed?"), answer directly using the Previous Conversation History and its [Cited Documents] tags.
+5. If the context contains relevant information that only partially answers the question, explain what the documents reveal and note what details are missing.
+6. If the provided context and conversation history are completely irrelevant or contain no information to answer the question, respond EXACTLY with this string: "{fallback_msg}"
 {history_block}
-### Retrieved Document Context:
+### Active Retrieved Document Context:
 {context_text}
 
 ### Current User Question:

@@ -27,6 +27,7 @@ DEFAULT_GENERATION_MODEL = "gemma3:latest"
 # RAG Hyperparameters
 DEFAULT_CHUNK_SIZE = 1000
 DEFAULT_CHUNK_OVERLAP = 200
+DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", 3))
 
 
 # File Storage Configuration

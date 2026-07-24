@@ -2,7 +2,7 @@ from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from core.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_GENERATION_MODEL
+from core.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_GENERATION_MODEL, DEFAULT_TOP_K
 
 
 def normalize_tag(value: str) -> str:
@@ -35,7 +35,9 @@ class SearchQuery(BaseModel):
     thread_id: Optional[str] = Field(
         default=None, description="Optional thread ID to continue an existing conversation."
     )
-    top_k: int = Field(default=3, ge=1, le=20, description="Number of context chunks to pull.")
+    top_k: int = Field(
+        default=DEFAULT_TOP_K, ge=1, le=20, description="Number of context chunks to pull."
+    )
     embedding_model: str = Field(
         default=DEFAULT_EMBEDDING_MODEL, description="Target vector space model."
     )
@@ -53,12 +55,14 @@ class SearchQuery(BaseModel):
 
 class DocumentSource(BaseModel):
     filename: str
+    chunk_index: int
     similarity: float
 
 
 class SearchResultCard(BaseModel):
     id: int
     filename: str
+    chunk_index: int
     content: str
     similarity: float
 

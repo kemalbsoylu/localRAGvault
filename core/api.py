@@ -248,9 +248,7 @@ def remove_thread(thread_id: str) -> dict:
         raise
     except Exception as e:
         logger.error(f"Error deleting thread {thread_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail="Failed to delete conversation thread."
-        ) from e
+        raise HTTPException(status_code=500, detail="Failed to delete conversation thread.") from e
 
 
 # --- VAULT & RAG ENDPOINTS ---
@@ -350,9 +348,9 @@ async def upload_document(
         logger.info(f"Processing '{file.filename}' -> generated {len(chunks)} text blocks.")
 
         chunk_data = []
-        for chunk in chunks:
+        for idx, chunk in enumerate(chunks, start=1):
             embedding = get_embedding(chunk, model_name=embedding_model)
-            chunk_data.append((chunk, embedding))
+            chunk_data.append((idx, chunk, embedding))
 
         inserted_chunks = insert_document_chunks(
             workspace_id=workspace_id,
@@ -456,6 +454,7 @@ async def search_documents(search: SearchQuery) -> VectorSearchResponse:
             SearchResultCard(
                 id=row["id"],
                 filename=row["filename"],
+                chunk_index=row["chunk_index"],
                 content=row["content"],
                 similarity=round(row["similarity"], 4),
             )
@@ -523,6 +522,7 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
         ) from e
 
     try:
+        # 2. Vector Retrieval
         query_embedding = get_embedding(search.query, model_name=search.embedding_model)
         if not query_embedding:
             logger.error("Failed to generate query embedding for RAG.")
@@ -534,13 +534,16 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
             top_k=search.top_k,
         )
 
-        retrieved_chunks = [row["content"] for row in raw_results]
         sources = [
-            DocumentSource(filename=row["filename"], similarity=round(row["similarity"], 4))
+            DocumentSource(
+                filename=row["filename"],
+                chunk_index=row["chunk_index"],
+                similarity=round(row["similarity"], 4),
+            )
             for row in raw_results
         ]
 
-        if not retrieved_chunks:
+        if not raw_results:
             logger.info("No matching contextual chunks found inside the vault.")
             add_message(thread_id, "user", search.query, search.generation_model)
             add_message(
@@ -560,10 +563,10 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
                 sources=[],
             )
 
-        # 2. Execute LLM with retrieved context AND chat history
+        # 3. Execute LLM with structured chunk context AND chat history
         llm_response = generate_answer(
             query=search.query,
-            context_chunks=retrieved_chunks,
+            context_chunks=raw_results,
             model_name=search.generation_model,
             chat_history=chat_history,
         )
@@ -572,7 +575,7 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
             logger.info("LLM returned context failure warning. Hiding document references.")
             sources = []
 
-        # 3. Persist turns to Database
+        # 4. Persist turns to Database
         add_message(thread_id, "user", search.query, search.generation_model)
         add_message(
             thread_id,

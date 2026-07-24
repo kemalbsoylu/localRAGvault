@@ -46,6 +46,7 @@ def init_db() -> None:
                         workspace_id VARCHAR(50) REFERENCES workspaces(id) ON DELETE CASCADE,
                         filename TEXT NOT NULL,
                         file_path TEXT NOT NULL,
+                        chunk_index INTEGER NOT NULL DEFAULT 0,
                         content TEXT NOT NULL,
                         embedding vector,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -71,9 +72,7 @@ def init_db() -> None:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """)
-        logger.info(
-            "Database initialized successfully. 'workspaces', 'documents', 'threads', and 'messages' tables are ready."
-        )
+        logger.info("Database schema verified and ready.")
     except Exception as e:
         logger.error(f"Critical error during database schema creation: {e}")
         raise
@@ -147,21 +146,21 @@ def insert_document_chunks(
     workspace_id: str,
     filename: str,
     file_path: str,
-    chunk_data: List[Tuple[str, List[float]]],
+    chunk_data: List[Tuple[int, str, List[float]]],  # Tuple: (chunk_index, text_chunk, embedding)
 ) -> int:
-    """Bulk inserts text chunks and their corresponding vector embeddings."""
+    """Bulk inserts text chunks with explicit chunk indices and embeddings."""
     inserted_chunks = 0
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                for chunk, embedding in chunk_data:
+                for idx, chunk, embedding in chunk_data:
                     if embedding:
                         cur.execute(
                             """
-                            INSERT INTO documents (workspace_id, filename, file_path, content, embedding)
-                            VALUES (%s, %s, %s, %s, %s)
+                            INSERT INTO documents (workspace_id, filename, file_path, chunk_index, content, embedding)
+                            VALUES (%s, %s, %s, %s, %s, %s)
                             """,
-                            (workspace_id, filename, file_path, chunk, embedding),
+                            (workspace_id, filename, file_path, idx, chunk, embedding),
                         )
                         inserted_chunks += 1
         return inserted_chunks
@@ -198,14 +197,14 @@ def fetch_workspace_inventory(workspace_id: str) -> List[dict]:
 
 
 def search_vector_db(workspace_id: str, query_embedding: List[float], top_k: int) -> List[dict]:
-    """Performs a vector similarity search against the document chunks."""
+    """Performs a vector similarity search returning content along with filename and chunk_index."""
     results = []
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, filename, content, 1 - (embedding <=> %s::vector) AS similarity
+                    SELECT id, filename, chunk_index, content, 1 - (embedding <=> %s::vector) AS similarity
                     FROM documents
                     WHERE workspace_id = %s
                     ORDER BY embedding <=> %s::vector
@@ -216,7 +215,13 @@ def search_vector_db(workspace_id: str, query_embedding: List[float], top_k: int
                 rows = cur.fetchall()
                 for row in rows:
                     results.append(
-                        {"id": row[0], "filename": row[1], "content": row[2], "similarity": row[3]}
+                        {
+                            "id": row[0],
+                            "filename": row[1],
+                            "chunk_index": row[2],
+                            "content": row[3],
+                            "similarity": row[4],
+                        }
                     )
         return results
     except Exception as e:

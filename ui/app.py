@@ -6,7 +6,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 import requests
 import streamlit as st
 
-from core.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_GENERATION_MODEL
+from core.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_GENERATION_MODEL, DEFAULT_TOP_K
 
 API_URL = "http://127.0.0.1:8000"
 
@@ -350,7 +350,7 @@ elif st.session_state.active_thread_id:
                         with st.expander("📚 Sources Cited"):
                             for s in msg["sources"]:
                                 st.markdown(
-                                    f"- 📄 **{s['filename']}** (Similarity: {s['similarity']})"
+                                    f"- 📄 **{s['filename']}** (Chunk #{s.get('chunk_index', 1)}, Similarity: {s['similarity']})"
                                 )
         else:
             st.error(f"Failed to load chat history: {get_error_msg(res)}")
@@ -390,7 +390,7 @@ elif st.session_state.active_thread_id:
                     "workspace_id": active_workspace["id"],
                     "query": st.session_state.current_query,
                     "thread_id": st.session_state.active_thread_id,
-                    "top_k": 3,
+                    "top_k": DEFAULT_TOP_K,
                     "embedding_model": active_workspace["embedding_model"],
                     "generation_model": st.session_state.selected_gen_model,
                 }
@@ -448,7 +448,7 @@ else:
             payload = {
                 "workspace_id": active_workspace["id"],
                 "query": st.session_state.current_query,
-                "top_k": 3,
+                "top_k": DEFAULT_TOP_K,
                 "embedding_model": active_workspace["embedding_model"],
                 "generation_model": st.session_state.selected_gen_model,
             }
@@ -499,12 +499,14 @@ else:
                     with st.expander("📚 View Sources Cited in Latest Reply"):
                         for source in t["sources"]:
                             st.markdown(
-                                f"- 📄 **{source['filename']}** (Similarity: {source['similarity']})"
+                                f"- 📄 **{source['filename']}** (Chunk #{source.get('chunk_index', 1)}, Similarity: {source['similarity']})"
                             )
 
                 # --- Safe Thread Deletion Expander ---
                 with st.expander("🗑️ Delete Thread"):
-                    st.warning("Warning: Deleting this thread will permanently remove its entire conversation history.")
+                    st.warning(
+                        "Warning: Deleting this thread will permanently remove its entire conversation history."
+                    )
                     confirm_del = st.checkbox(
                         "Confirm thread deletion",
                         key=f"chk_del_{t['id']}",
@@ -523,8 +525,6 @@ else:
                                     st.success("Thread deleted.")
                                     st.rerun()
                                 else:
-                                    st.error(
-                                        f"Deletion failed: {get_error_msg(del_res)}"
-                                    )
+                                    st.error(f"Deletion failed: {get_error_msg(del_res)}")
                             except requests.exceptions.ConnectionError:
                                 st.error("Backend unreachable.")
