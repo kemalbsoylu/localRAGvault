@@ -144,3 +144,26 @@ class DocumentInventoryItem(BaseModel):
 class WorkspaceInventoryResponse(BaseModel):
     workspace_id: str
     documents: List[DocumentInventoryItem]
+
+
+class FileIngestionResult(BaseModel):
+    filename: str
+    status: str  # "success", "upserted", "failed"
+    chunks_saved: int = 0
+    error_message: Optional[str] = None
+
+
+class BatchIngestionSummary(BaseModel):
+    total_files: int
+    successful: int
+    upserts: int
+    failed: int
+    total_chunks_saved: int
+
+
+class BatchIngestionResponse(BaseModel):
+    status: str
+    workspace_id: str
+    model_used: str
+    summary: BatchIngestionSummary
+    results: List[FileIngestionResult]

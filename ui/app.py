@@ -25,10 +25,10 @@ if "selected_gen_model" not in st.session_state:
     st.session_state.selected_gen_model = DEFAULT_GENERATION_MODEL
 if "pending_workspace" not in st.session_state:
     st.session_state.pending_workspace = None
-if "pending_upload" not in st.session_state:
-    st.session_state.pending_upload = None
-if "upload_success_msg" not in st.session_state:
-    st.session_state.upload_success_msg = None
+if "pending_batch_upload" not in st.session_state:
+    st.session_state.pending_batch_upload = None
+if "batch_report" not in st.session_state:
+    st.session_state.batch_report = None
 if "file_uploader_key" not in st.session_state:
     st.session_state.file_uploader_key = 0
 
@@ -132,33 +132,67 @@ with st.sidebar:
         st.markdown("---")
         st.header("Add to Vault")
 
-        if st.session_state.upload_success_msg:
-            st.success(st.session_state.upload_success_msg)
-            st.session_state.upload_success_msg = None
+        # --- Ingestion Report ---
+        if st.session_state.batch_report:
+            rep = st.session_state.batch_report
+            with st.container(border=True):
+                col_title, col_close = st.columns([7, 3])
+                with col_title:
+                    st.subheader("📊 Ingestion Report")
+                with col_close:
+                    if st.button("❌", key="btn_dismiss_rep", use_container_width=True):
+                        st.session_state.batch_report = None
+                        st.rerun()
 
+                sum_data = rep["summary"]
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("Total", sum_data["total_files"])
+                c2.metric("New", sum_data["successful"])
+                c3.metric("Updated", sum_data["upserts"])
+                c4.metric("Chunks", sum_data["total_chunks_saved"])
+
+                if sum_data["failed"] > 0:
+                    st.error(f"⚠️ {sum_data['failed']} file(s) failed to ingest.")
+
+                with st.expander("📄 View File Breakdown", expanded=(sum_data["failed"] > 0)):
+                    for item in rep["results"]:
+                        if item["status"] == "failed":
+                            st.markdown(
+                                f"❌ **{item['filename']}** — *Failed:* `{item['error_message']}`"
+                            )
+                        elif item["status"] == "upserted":
+                            st.markdown(
+                                f"🔄 **{item['filename']}** — *Updated* ({item['chunks_saved']} chunks saved)"
+                            )
+                        else:
+                            st.markdown(
+                                f"✅ **{item['filename']}** — *New* ({item['chunks_saved']} chunks saved)"
+                            )
+
+        # --- Multi-File & Folder Ingestion Form ---
         with st.form("upload_form"):
-            uploaded_file = st.file_uploader(
-                "Upload a document",
+            uploaded_files = st.file_uploader(
+                "Upload documents",
                 type=["txt", "md", "pdf", "docx", "csv", "json"],
+                accept_multiple_files=True,
                 disabled=st.session_state.is_processing,
                 key=f"file_uploader_{st.session_state.file_uploader_key}",
-                help="💡 Tip: Re-uploading a file with the exact same name automatically replaces the old version and updates your vector embeddings without creating duplicates.",
+                help="💡 Tip: You can select multiple files at once or drag a folder. Re-uploading a file with the exact same name automatically replaces the old version without creating duplicates.",
             )
             submit_upload = st.form_submit_button(
-                "Ingest Document", disabled=st.session_state.is_processing
+                "Ingest Documents", disabled=st.session_state.is_processing
             )
 
-            if submit_upload and uploaded_file is not None:
+            if submit_upload and uploaded_files:
                 st.session_state.is_processing = True
-                st.session_state.pending_upload = {
-                    "filename": uploaded_file.name,
-                    "content": uploaded_file.getvalue(),
+                st.session_state.pending_batch_upload = {
+                    "files": [(f.name, f.getvalue()) for f in uploaded_files],
                     "workspace_id": active_workspace["id"],
                     "embedding_model": active_workspace["embedding_model"],
                 }
                 st.rerun()
             elif submit_upload:
-                st.warning("Please select a file first.")
+                st.warning("Please select at least one file first.")
 
         st.markdown("---")
         st.header(f"📂 Inventory: {active_workspace['name']}")
@@ -225,7 +259,7 @@ with st.sidebar:
                         if del_ws_res.status_code == 200:
                             st.session_state.active_thread_id = None
                             st.session_state.current_query = ""
-                            st.session_state.upload_success_msg = None
+                            st.session_state.batch_report = None
                             st.session_state.pop(f"chk_del_ws_{active_workspace['id']}", None)
                             st.success(f"Workspace '{active_workspace['name']}' has been deleted.")
                             st.rerun()
@@ -257,29 +291,24 @@ if st.session_state.pending_workspace:
     st.session_state.is_processing = False
     st.rerun()
 
-if st.session_state.pending_upload:
-    pu = st.session_state.pending_upload
-    st.session_state.pending_upload = None
-    with st.spinner(f"Ingesting '{pu['filename']}' and calculating vector embeddings..."):
-        files = {"file": (pu["filename"], pu["content"], "text/plain")}
-        data = {
+if st.session_state.pending_batch_upload:
+    pu = st.session_state.pending_batch_upload
+    st.session_state.pending_batch_upload = None
+    with st.spinner(f"Batch ingesting {len(pu['files'])} file(s) and calculating embeddings..."):
+        files_payload = [
+            ("files", (name, content, "application/octet-stream")) for name, content in pu["files"]
+        ]
+        data_payload = {
             "workspace_id": pu["workspace_id"],
             "embedding_model": pu["embedding_model"],
         }
         try:
-            res = requests.post(f"{API_URL}/upload/", files=files, data=data)
+            res = requests.post(f"{API_URL}/upload/batch/", files=files_payload, data=data_payload)
             if res.status_code == 200:
-                res_data = res.json()
-                if res_data.get("is_upsert"):
-                    st.session_state.upload_success_msg = (
-                        f"🔄 Updated! Replaced '{res_data['filename']}' "
-                        f"({res_data.get('chunks_deleted', 0)} old chunks removed, {res_data['chunks_saved']} new chunks saved)."
-                    )
-                else:
-                    st.session_state.upload_success_msg = f"✅ Success! {res_data['chunks_saved']} chunks saved for '{res_data['filename']}'."
+                st.session_state.batch_report = res.json()
                 st.session_state.file_uploader_key += 1
             else:
-                st.error(f"Upload failed: {get_error_msg(res)}")
+                st.error(f"Batch upload failed: {get_error_msg(res)}")
         except requests.exceptions.ConnectionError:
             st.error("Backend unreachable.")
     st.session_state.is_processing = False

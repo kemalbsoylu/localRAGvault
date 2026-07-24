@@ -26,8 +26,11 @@ from core.database import (
 from core.extractors import extract_text_from_file
 from core.logging_config import logger
 from core.schemas import (
+    BatchIngestionResponse,
+    BatchIngestionSummary,
     DocumentInventoryItem,
     DocumentSource,
+    FileIngestionResult,
     IngestionResponse,
     MessageCard,
     ModelListResponse,
@@ -281,12 +284,49 @@ def get_workspace_inventory(workspace_id: str) -> WorkspaceInventoryResponse:
         raise HTTPException(status_code=500, detail="Failed to fetch workspace inventory.") from e
 
 
+def _process_single_file_ingestion(
+    workspace_id: str,
+    filename: str,
+    content_bytes: bytes,
+    embedding_model: str,
+) -> tuple[int, int]:
+    """Internal helper to execute clean upserts, extraction, chunking, and batch DB insertion for a single file."""
+    old_chunks = delete_document(workspace_id, filename)
+    if old_chunks > 0:
+        logger.info(
+            f"Clean upsert triggered: Removed {old_chunks} existing vector chunks for '{filename}'."
+        )
+
+    content_text = extract_text_from_file(content_bytes, filename)
+    physical_file_path = save_physical_file(workspace_id, filename, content_bytes)
+    logger.info(f"Physical file saved to disk: {physical_file_path}")
+
+    chunks = chunk_text(content_text)
+    logger.info(f"Processing '{filename}' -> generated {len(chunks)} text blocks.")
+
+    embeddings = get_embeddings_batch(chunks, model_name=embedding_model)
+    chunk_data = [
+        (idx, chunk, emb)
+        for idx, (chunk, emb) in enumerate(zip(chunks, embeddings, strict=True), start=1)
+    ]
+
+    inserted_chunks = insert_document_chunks(
+        workspace_id=workspace_id,
+        filename=filename,
+        file_path=str(physical_file_path),
+        chunk_data=chunk_data,
+    )
+
+    return inserted_chunks, old_chunks
+
+
 @app.post("/upload/", response_model=IngestionResponse)
 def upload_document(
     workspace_id: str = Form(...),
     file: UploadFile = File(...),
     embedding_model: str = Form(DEFAULT_EMBEDDING_MODEL),
 ) -> IngestionResponse:
+    """Single document ingestion endpoint."""
     supported_extensions = (".txt", ".md", ".pdf", ".docx", ".csv", ".json")
     if not file.filename or not file.filename.lower().endswith(supported_extensions):
         logger.warning(f"Rejected unsupported file upload attempt: {file.filename}")
@@ -308,7 +348,6 @@ def upload_document(
         raise HTTPException(status_code=404, detail="Target workspace does not exist.")
 
     embedding_model = normalize_model_name(embedding_model)
-
     if ws["embedding_model"] != embedding_model:
         logger.warning(
             f"Vector pollution blocked: Workspace requires {ws['embedding_model']}, got {embedding_model}."
@@ -319,52 +358,11 @@ def upload_document(
         )
 
     try:
-        old_chunks = delete_document(workspace_id, file.filename)
-        if old_chunks > 0:
-            logger.info(
-                f"Clean upsert triggered: Removed {old_chunks} existing vector chunks for '{file.filename}'."
-            )
-    except Exception as e:
-        logger.error(f"Database failure during clean upsert cleanup for {file.filename}: {e}")
-        raise HTTPException(
-            status_code=500, detail="Database failure during document update cleanup."
-        ) from e
-
-    content_bytes = file.file.read()
-    try:
-        content_text = extract_text_from_file(content_bytes, file.filename)
-    except ValueError as val_err:
-        logger.warning(f"File extraction failed for '{file.filename}': {val_err}")
-        raise HTTPException(status_code=400, detail=str(val_err)) from val_err
-    except Exception as err:
-        logger.error(f"Unexpected parser failure during extraction for '{file.filename}': {err}")
-        raise HTTPException(status_code=500, detail="Failed to extract text from file.") from err
-
-    try:
-        physical_file_path = save_physical_file(workspace_id, file.filename, content_bytes)
-        logger.info(f"Physical file saved to disk: {physical_file_path}")
-
-        chunks = chunk_text(content_text)
-        logger.info(f"Processing '{file.filename}' -> generated {len(chunks)} text blocks.")
-
-        # Batch embedding generation
-        embeddings = get_embeddings_batch(chunks, model_name=embedding_model)
-        chunk_data = [
-            (idx, chunk, emb)
-            for idx, (chunk, emb) in enumerate(zip(chunks, embeddings, strict=True), start=1)
-        ]
-
-        # Batch DB insertion
-        inserted_chunks = insert_document_chunks(
-            workspace_id=workspace_id,
-            filename=file.filename,
-            file_path=str(physical_file_path),
-            chunk_data=chunk_data,
+        content_bytes = file.file.read()
+        inserted_chunks, old_chunks = _process_single_file_ingestion(
+            workspace_id, file.filename, content_bytes, embedding_model
         )
-
-        logger.info(
-            f"Successfully processed ingestion: {inserted_chunks}/{len(chunks)} chunks saved."
-        )
+        logger.info(f"Successfully processed ingestion: {inserted_chunks} chunks saved.")
         return IngestionResponse(
             status="success",
             workspace_id=workspace_id,
@@ -374,11 +372,133 @@ def upload_document(
             is_upsert=(old_chunks > 0),
             chunks_deleted=old_chunks,
         )
+    except ValueError as val_err:
+        logger.warning(f"File extraction failed for '{file.filename}': {val_err}")
+        raise HTTPException(status_code=400, detail=str(val_err)) from val_err
     except Exception as e:
         logger.error(f"Error during file ingestion processing: {e}")
         raise HTTPException(
             status_code=500, detail="Internal server error during document processing."
         ) from e
+
+
+@app.post("/upload/batch/", response_model=BatchIngestionResponse)
+def upload_documents_batch(
+    workspace_id: str = Form(...),
+    files: List[UploadFile] = File(...),
+    embedding_model: str = Form(DEFAULT_EMBEDDING_MODEL),
+) -> BatchIngestionResponse:
+    """Batch ingestion endpoint for processing multiple files or entire folder selections."""
+    supported_extensions = (".txt", ".md", ".pdf", ".docx", ".csv", ".json")
+
+    try:
+        ws = get_workspace(workspace_id)
+    except Exception as e:
+        logger.error(f"Database error while looking up workspace {workspace_id}: {e}")
+        raise HTTPException(status_code=500, detail="Database failure verifying workspace.") from e
+
+    if not ws:
+        raise HTTPException(status_code=404, detail="Target workspace does not exist.")
+
+    embedding_model = normalize_model_name(embedding_model)
+    if ws["embedding_model"] != embedding_model:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model mismatch! Workspace '{ws['name']}' is locked to '{ws['embedding_model']}'.",
+        )
+
+    results: List[FileIngestionResult] = []
+    total_chunks = 0
+    success_count = 0
+    upsert_count = 0
+    failed_count = 0
+
+    logger.info(
+        f"Starting batch ingestion of {len(files)} file(s) into workspace '{ws['name']}'..."
+    )
+
+    for file in files:
+        if not file.filename or not file.filename.strip():
+            logger.warning("Batch skip: Rejected file stream with missing or empty filename.")
+            results.append(
+                FileIngestionResult(
+                    filename="unnamed_stream",
+                    status="failed",
+                    error_message="File upload rejected: Missing or empty filename.",
+                )
+            )
+            failed_count += 1
+            continue
+
+        filename = file.filename
+
+        if not filename.lower().endswith(supported_extensions):
+            logger.warning(f"Batch skip: Unsupported extension for '{filename}'")
+            results.append(
+                FileIngestionResult(
+                    filename=filename,
+                    status="failed",
+                    error_message=f"Unsupported file type. Supported: {', '.join(supported_extensions)}",
+                )
+            )
+            failed_count += 1
+            continue
+
+        try:
+            content_bytes = file.file.read()
+            inserted_chunks, old_chunks = _process_single_file_ingestion(
+                workspace_id, filename, content_bytes, embedding_model
+            )
+
+            is_upsert = old_chunks > 0
+            if is_upsert:
+                upsert_count += 1
+                status_str = "upserted"
+            else:
+                success_count += 1
+                status_str = "success"
+
+            total_chunks += inserted_chunks
+            results.append(
+                FileIngestionResult(
+                    filename=filename, status=status_str, chunks_saved=inserted_chunks
+                )
+            )
+            logger.info(f"Batch item complete: '{filename}' ({inserted_chunks} chunks)")
+
+        except ValueError as val_err:
+            logger.warning(f"Batch extraction failed for '{filename}': {val_err}")
+            results.append(
+                FileIngestionResult(filename=filename, status="failed", error_message=str(val_err))
+            )
+            failed_count += 1
+        except Exception as err:
+            logger.error(f"Batch unexpected error processing '{filename}': {err}")
+            results.append(
+                FileIngestionResult(
+                    filename=filename, status="failed", error_message="Internal processing error."
+                )
+            )
+            failed_count += 1
+
+    summary = BatchIngestionSummary(
+        total_files=len(files),
+        successful=success_count,
+        upserts=upsert_count,
+        failed=failed_count,
+        total_chunks_saved=total_chunks,
+    )
+
+    logger.info(
+        f"Batch ingestion complete: {success_count} new, {upsert_count} updated, {failed_count} failed."
+    )
+    return BatchIngestionResponse(
+        status="completed",
+        workspace_id=workspace_id,
+        model_used=embedding_model,
+        summary=summary,
+        results=results,
+    )
 
 
 @app.delete("/documents/{workspace_id}/{filename}", response_model=dict)
