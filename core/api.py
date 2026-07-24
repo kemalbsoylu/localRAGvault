@@ -298,9 +298,6 @@ def _process_single_file_ingestion(
         )
 
     content_text = extract_text_from_file(content_bytes, filename)
-    physical_file_path = save_physical_file(workspace_id, filename, content_bytes)
-    logger.info(f"Physical file saved to disk: {physical_file_path}")
-
     chunks = chunk_text(content_text)
     logger.info(f"Processing '{filename}' -> generated {len(chunks)} text blocks.")
 
@@ -309,6 +306,9 @@ def _process_single_file_ingestion(
         (idx, chunk, emb)
         for idx, (chunk, emb) in enumerate(zip(chunks, embeddings, strict=True), start=1)
     ]
+
+    physical_file_path = save_physical_file(workspace_id, filename, content_bytes)
+    logger.info(f"Physical file saved to disk: {physical_file_path}")
 
     inserted_chunks = insert_document_chunks(
         workspace_id=workspace_id,
@@ -398,10 +398,14 @@ def upload_documents_batch(
         raise HTTPException(status_code=500, detail="Database failure verifying workspace.") from e
 
     if not ws:
+        logger.warning(f"Batch upload rejected: Workspace '{workspace_id}' not found.")
         raise HTTPException(status_code=404, detail="Target workspace does not exist.")
 
     embedding_model = normalize_model_name(embedding_model)
     if ws["embedding_model"] != embedding_model:
+        logger.warning(
+            f"Batch vector pollution blocked: Workspace requires '{ws['embedding_model']}', got '{embedding_model}'."
+        )
         raise HTTPException(
             status_code=400,
             detail=f"Model mismatch! Workspace '{ws['name']}' is locked to '{ws['embedding_model']}'.",
