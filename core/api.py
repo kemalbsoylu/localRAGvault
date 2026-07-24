@@ -322,6 +322,8 @@ async def upload_document(
             filename=file.filename,
             model_used=embedding_model,
             chunks_saved=inserted_chunks,
+            is_upsert=(old_chunks > 0),
+            chunks_deleted=old_chunks,
         )
     except Exception as e:
         logger.error(f"Error during file ingestion processing: {e}")

@@ -117,6 +117,8 @@ class IngestionResponse(BaseModel):
     filename: str
     model_used: str
     chunks_saved: int
+    is_upsert: bool = False
+    chunks_deleted: int = 0
 
 
 class ModelListResponse(BaseModel):

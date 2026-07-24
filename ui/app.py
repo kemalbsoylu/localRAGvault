@@ -138,10 +138,11 @@ with st.sidebar:
 
         with st.form("upload_form"):
             uploaded_file = st.file_uploader(
-                "Upload a .txt or .md file",
-                type=["txt", "md"],
+                "Upload a document",
+                type=["txt", "md", "pdf", "docx", "csv", "json"],
                 disabled=st.session_state.is_processing,
                 key=f"file_uploader_{st.session_state.file_uploader_key}",
+                help="💡 Tip: Re-uploading a file with the exact same name automatically replaces the old version and updates your vector embeddings without creating duplicates.",
             )
             submit_upload = st.form_submit_button(
                 "Ingest Document", disabled=st.session_state.is_processing
@@ -173,12 +174,69 @@ with st.sidebar:
                         with st.expander(f"📄 {doc['filename']}"):
                             st.caption(f"**Path:** `{doc['file_path']}`")
                             st.caption(f"**Total Chunks:** {doc['total_chunks']}")
+
+                            # --- Safe Document Deletion UI ---
+                            confirm_del_file = st.checkbox(
+                                "Confirm deletion",
+                                key=f"chk_{active_workspace['id']}_{doc['filename']}",
+                            )
+                            if st.button(
+                                "🗑️ Delete File",
+                                key=f"btn_{active_workspace['id']}_{doc['filename']}",
+                                disabled=not confirm_del_file or st.session_state.is_processing,
+                                use_container_width=True,
+                            ):
+                                with st.spinner(f"Deleting '{doc['filename']}'..."):
+                                    del_res = requests.delete(
+                                        f"{API_URL}/documents/{active_workspace['id']}/{doc['filename']}"
+                                    )
+                                    if del_res.status_code == 200:
+                                        st.success(f"Deleted '{doc['filename']}'.")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Deletion failed: {get_error_msg(del_res)}")
                 else:
                     st.info("Vault is empty.")
             else:
                 st.error(f"Failed to load inventory: {get_error_msg(inv_res)}")
         except requests.exceptions.ConnectionError:
             st.error("Backend unreachable.")
+
+        # --- Safe Workspace Deletion UI ---
+        st.markdown("---")
+        with st.expander("⚠️ Danger Zone: Delete Workspace"):
+            st.warning(
+                "**Warning:** This will permanently delete this workspace, all conversation history, and all indexed physical files from disk. This cannot be undone."
+            )
+            confirm_del_ws = st.checkbox(
+                "I understand this permanently destroys all data in this workspace.",
+                key=f"chk_del_ws_{active_workspace['id']}",
+            )
+            if st.button(
+                "🚨 Delete Workspace Permanently",
+                disabled=not confirm_del_ws or st.session_state.is_processing,
+                use_container_width=True,
+            ):
+                with st.spinner(f"Deleting workspace '{active_workspace['name']}'..."):
+                    try:
+                        del_ws_res = requests.delete(
+                            f"{API_URL}/workspaces/{active_workspace['id']}"
+                        )
+                        if del_ws_res.status_code == 200:
+                            # Clear session states and explicitly purge old checkbox keys
+                            st.session_state.active_thread_id = None
+                            st.session_state.current_query = ""
+                            st.session_state.upload_success_msg = None
+
+                            # Pop the scoped checkbox out of memory
+                            st.session_state.pop(f"chk_del_ws_{active_workspace['id']}", None)
+
+                            st.success(f"Workspace '{active_workspace['name']}' has been deleted.")
+                            st.rerun()
+                        else:
+                            st.error(f"Failed to delete workspace: {get_error_msg(del_ws_res)}")
+                    except requests.exceptions.ConnectionError:
+                        st.error("Backend unreachable.")
 
 
 # =====================================================================
@@ -216,7 +274,13 @@ if st.session_state.pending_upload:
             res = requests.post(f"{API_URL}/upload/", files=files, data=data)
             if res.status_code == 200:
                 res_data = res.json()
-                st.session_state.upload_success_msg = f"✅ Success! {res_data['chunks_saved']} chunks saved for '{res_data['filename']}'."
+                if res_data.get("is_upsert"):
+                    st.session_state.upload_success_msg = (
+                        f"🔄 Updated! Replaced '{res_data['filename']}' "
+                        f"({res_data.get('chunks_deleted', 0)} old chunks removed, {res_data['chunks_saved']} new chunks saved)."
+                    )
+                else:
+                    st.session_state.upload_success_msg = f"✅ Success! {res_data['chunks_saved']} chunks saved for '{res_data['filename']}'."
                 st.session_state.file_uploader_key += 1
             else:
                 st.error(f"Upload failed: {get_error_msg(res)}")
@@ -232,7 +296,7 @@ if st.session_state.pending_upload:
 
 threads = fetch_workspace_threads(active_workspace["id"]) if active_workspace else []
 
-# Guard against stale thread IDs when workspace switches
+# Guard against stale thread IDs when workspace switches or gets deleted
 if st.session_state.active_thread_id:
     if not any(t["id"] == st.session_state.active_thread_id for t in threads):
         st.session_state.active_thread_id = None
@@ -252,11 +316,10 @@ elif st.session_state.active_thread_id:
 
     col1, col2 = st.columns([8, 2])
     with col1:
-        # Show actual Thread Name as title
         st.header(f"💬 {thread_display_title}")
     with col2:
         if st.button(
-            "⬅️ Back to Search", use_container_width=True, disabled=st.session_state.is_processing
+            "⬅️ Back to Workspace", use_container_width=True, disabled=st.session_state.is_processing
         ):
             st.session_state.active_thread_id = None
             st.rerun()
@@ -276,7 +339,6 @@ elif st.session_state.active_thread_id:
                 with st.chat_message(msg["role"], avatar=icon):
                     st.markdown(msg["content"])
 
-                    # Format message creation timestamp
                     msg_time = (
                         msg["created_at"][:16].replace("T", " ")
                         if "T" in msg["created_at"]
@@ -353,8 +415,10 @@ elif st.session_state.active_thread_id:
 
 # VIEW 2: STANDARD VAULT SEARCH VIEW
 else:
+    st.header(f"🗃️ {active_workspace['name']}")
+
     st.caption(
-        f"**Active Workspace:** `{active_workspace['name']}` | "
+        f"**Workspace ID:** `{active_workspace['id']}` | "
         f"**Embedding Model:** `{active_workspace['embedding_model']}` | "
         f"**Vector Dimensions:** `{active_workspace['dimension']}`"
     )
