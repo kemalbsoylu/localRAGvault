@@ -223,14 +223,10 @@ with st.sidebar:
                             f"{API_URL}/workspaces/{active_workspace['id']}"
                         )
                         if del_ws_res.status_code == 200:
-                            # Clear session states and explicitly purge old checkbox keys
                             st.session_state.active_thread_id = None
                             st.session_state.current_query = ""
                             st.session_state.upload_success_msg = None
-
-                            # Pop the scoped checkbox out of memory
                             st.session_state.pop(f"chk_del_ws_{active_workspace['id']}", None)
-
                             st.success(f"Workspace '{active_workspace['name']}' has been deleted.")
                             st.rerun()
                         else:
@@ -306,7 +302,6 @@ if not active_workspace:
 
 # VIEW 1: MULTI-TURN CHAT CONVERSATION VIEW
 elif st.session_state.active_thread_id:
-    # Resolve current active thread title from fetched threads list
     current_thread = next(
         (t for t in threads if t["id"] == st.session_state.active_thread_id), None
     )
@@ -329,7 +324,6 @@ elif st.session_state.active_thread_id:
     )
     st.markdown("---")
 
-    # Fetch and render message history from DB with timestamps
     try:
         res = requests.get(f"{API_URL}/threads/{st.session_state.active_thread_id}/messages")
         if res.status_code == 200:
@@ -375,7 +369,6 @@ elif st.session_state.active_thread_id:
             key="chat_llm_select",
         )
 
-    # Native Chat Input
     if follow_up_query := st.chat_input(
         "Ask a follow-up question...", disabled=st.session_state.is_processing
     ):
@@ -495,7 +488,7 @@ else:
                 with col2:
                     if st.button(
                         "💬 Open Conversation",
-                        key=f"btn_{t['id']}",
+                        key=f"btn_open_{t['id']}",
                         use_container_width=True,
                         disabled=st.session_state.is_processing,
                     ):
@@ -503,8 +496,35 @@ else:
                         st.rerun()
 
                 if t.get("sources"):
-                    with st.expander("View Sources Cited in Latest Reply"):
+                    with st.expander("📚 View Sources Cited in Latest Reply"):
                         for source in t["sources"]:
                             st.markdown(
                                 f"- 📄 **{source['filename']}** (Similarity: {source['similarity']})"
                             )
+
+                # --- Safe Thread Deletion Expander ---
+                with st.expander("🗑️ Delete Thread"):
+                    st.warning("Warning: Deleting this thread will permanently remove its entire conversation history.")
+                    confirm_del = st.checkbox(
+                        "Confirm thread deletion",
+                        key=f"chk_del_{t['id']}",
+                    )
+                    if st.button(
+                        "🚨 Permanently Delete Thread",
+                        key=f"btn_del_{t['id']}",
+                        disabled=not confirm_del or st.session_state.is_processing,
+                        use_container_width=True,
+                    ):
+                        with st.spinner("Deleting thread..."):
+                            try:
+                                del_res = requests.delete(f"{API_URL}/threads/{t['id']}")
+                                if del_res.status_code == 200:
+                                    st.session_state.pop(f"chk_del_{t['id']}", None)
+                                    st.success("Thread deleted.")
+                                    st.rerun()
+                                else:
+                                    st.error(
+                                        f"Deletion failed: {get_error_msg(del_res)}"
+                                    )
+                            except requests.exceptions.ConnectionError:
+                                st.error("Backend unreachable.")

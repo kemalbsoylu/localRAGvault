@@ -11,6 +11,7 @@ from core.database import (
     create_thread,
     create_workspace,
     delete_document,
+    delete_thread,
     delete_workspace,
     fetch_workspace_inventory,
     get_all_workspaces,
@@ -143,6 +144,30 @@ def create_new_workspace(ws: WorkspaceCreate) -> WorkspaceResponse:
     )
 
 
+@app.delete("/workspaces/{workspace_id}", response_model=dict)
+def remove_workspace(workspace_id: str) -> dict:
+    """Deletes a workspace, all associated database records (documents, threads, messages), and disk files."""
+    try:
+        deleted = delete_workspace(workspace_id)
+        if not deleted:
+            logger.warning(f"Workspace deletion failed: Workspace '{workspace_id}' not found.")
+            raise HTTPException(status_code=404, detail="Workspace not found.")
+
+        delete_workspace_files(workspace_id)
+        logger.info(f"Workspace '{workspace_id}' completely purged from database and disk.")
+        return {
+            "status": "success",
+            "message": f"Workspace '{workspace_id}' and all associated files deleted.",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting workspace {workspace_id}: {e}")
+        raise HTTPException(
+            status_code=500, detail="Failed to delete workspace from backend."
+        ) from e
+
+
 # --- CONVERSATION ENDPOINTS ---
 
 
@@ -203,6 +228,29 @@ def get_thread_history(thread_id: str) -> ThreadHistoryResponse:
     except Exception as e:
         logger.error(f"Error fetching messages for thread {thread_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch message history.") from e
+
+
+@app.delete("/threads/{thread_id}", response_model=dict)
+def remove_thread(thread_id: str) -> dict:
+    """Deletes a specific conversation thread and all its chronological messages."""
+    try:
+        deleted = delete_thread(thread_id)
+        if not deleted:
+            logger.warning(f"Thread deletion failed: Thread '{thread_id}' not found.")
+            raise HTTPException(status_code=404, detail="Thread not found.")
+
+        logger.info(f"Thread '{thread_id}' and all associated messages purged from database.")
+        return {
+            "status": "success",
+            "message": f"Thread '{thread_id}' permanently deleted.",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting thread {thread_id}: {e}")
+        raise HTTPException(
+            status_code=500, detail="Failed to delete conversation thread."
+        ) from e
 
 
 # --- VAULT & RAG ENDPOINTS ---
@@ -329,6 +377,43 @@ async def upload_document(
         logger.error(f"Error during file ingestion processing: {e}")
         raise HTTPException(
             status_code=500, detail="Internal server error during document processing."
+        ) from e
+
+
+@app.delete("/documents/{workspace_id}/{filename}", response_model=dict)
+def remove_document(workspace_id: str, filename: str) -> dict:
+    """Deletes a specific document's vector chunks from the database and removes its physical file."""
+    try:
+        ws = get_workspace(workspace_id)
+        if not ws:
+            logger.warning(f"Document deletion failed: Workspace '{workspace_id}' not found.")
+            raise HTTPException(status_code=404, detail="Workspace not found.")
+
+        deleted_chunks = delete_document(workspace_id, filename)
+        file_removed = delete_physical_file(workspace_id, filename)
+
+        if deleted_chunks == 0 and not file_removed:
+            logger.warning(
+                f"Document deletion failed: '{filename}' not found in workspace '{workspace_id}'."
+            )
+            raise HTTPException(status_code=404, detail="Document not found in workspace.")
+
+        logger.info(
+            f"Document '{filename}' purged from workspace '{workspace_id}' ({deleted_chunks} chunks removed)."
+        )
+        return {
+            "status": "success",
+            "workspace_id": workspace_id,
+            "filename": filename,
+            "chunks_deleted": deleted_chunks,
+            "file_removed": file_removed,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting document {filename} from {workspace_id}: {e}")
+        raise HTTPException(
+            status_code=500, detail="Failed to delete document from backend."
         ) from e
 
 
@@ -512,65 +597,4 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
         logger.error(f"RAG pipeline failure: {e}")
         raise HTTPException(
             status_code=500, detail="Internal server error during RAG generation."
-        ) from e
-
-
-@app.delete("/workspaces/{workspace_id}", response_model=dict)
-def remove_workspace(workspace_id: str) -> dict:
-    """Deletes a workspace, all associated database records (documents, threads, messages), and disk files."""
-    try:
-        deleted = delete_workspace(workspace_id)
-        if not deleted:
-            logger.warning(f"Workspace deletion failed: Workspace '{workspace_id}' not found.")
-            raise HTTPException(status_code=404, detail="Workspace not found.")
-
-        delete_workspace_files(workspace_id)
-        logger.info(f"Workspace '{workspace_id}' completely purged from database and disk.")
-        return {
-            "status": "success",
-            "message": f"Workspace '{workspace_id}' and all associated files deleted.",
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting workspace {workspace_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail="Failed to delete workspace from backend."
-        ) from e
-
-
-@app.delete("/documents/{workspace_id}/{filename}", response_model=dict)
-def remove_document(workspace_id: str, filename: str) -> dict:
-    """Deletes a specific document's vector chunks from the database and removes its physical file."""
-    try:
-        ws = get_workspace(workspace_id)
-        if not ws:
-            logger.warning(f"Document deletion failed: Workspace '{workspace_id}' not found.")
-            raise HTTPException(status_code=404, detail="Workspace not found.")
-
-        deleted_chunks = delete_document(workspace_id, filename)
-        file_removed = delete_physical_file(workspace_id, filename)
-
-        if deleted_chunks == 0 and not file_removed:
-            logger.warning(
-                f"Document deletion failed: '{filename}' not found in workspace '{workspace_id}'."
-            )
-            raise HTTPException(status_code=404, detail="Document not found in workspace.")
-
-        logger.info(
-            f"Document '{filename}' purged from workspace '{workspace_id}' ({deleted_chunks} chunks removed)."
-        )
-        return {
-            "status": "success",
-            "workspace_id": workspace_id,
-            "filename": filename,
-            "chunks_deleted": deleted_chunks,
-            "file_removed": file_removed,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting document {filename} from {workspace_id}: {e}")
-        raise HTTPException(
-            status_code=500, detail="Failed to delete document from backend."
         ) from e

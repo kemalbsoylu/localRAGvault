@@ -414,5 +414,18 @@ def delete_document(workspace_id: str, filename: str) -> int:
         raise
 
 
+def delete_thread(thread_id: str) -> bool:
+    """Deletes a conversation thread from the database. Cascade constraints automatically purge child messages."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM threads WHERE id = %s RETURNING id;", (thread_id,))
+                row = cur.fetchone()
+                return row is not None
+    except Exception as e:
+        logger.error(f"Database error while deleting thread '{thread_id}': {e}")
+        raise
+
+
 if __name__ == "__main__":
     init_db()
