@@ -357,3 +357,182 @@ def test_ask_question_real_model() -> None:
     assert len(result["sources"]) > 0
     assert result["sources"][0]["filename"] == "integration_doc.txt"
     assert result["sources"][0]["chunk_index"] >= 1
+
+
+# =====================================================================
+# --- 7. BATCH INGESTION & MULTI-STREAM TESTS ---
+# =====================================================================
+
+
+def test_upload_batch_success_and_upsert() -> None:
+    """Verify multi-file batch ingestion correctly tracks new saves vs clean upserts."""
+    ws_id = _create_test_workspace("Batch Success WS")
+
+    # 1. Initial batch upload of two distinct files
+    files_batch = [
+        ("files", ("doc_alpha.txt", b"Alpha document content.", "text/plain")),
+        ("files", ("doc_beta.csv", b"id,val\n1,100\n2,200", "text/csv")),
+    ]
+    res1 = client.post(
+        "/upload/batch/",
+        files=files_batch,
+        data={"workspace_id": ws_id, "embedding_model": DEFAULT_EMBEDDING_MODEL},
+    )
+    assert res1.status_code == 200
+    data1 = res1.json()
+    assert data1["summary"]["total_files"] == 2
+    assert data1["summary"]["successful"] == 2
+    assert data1["summary"]["upserts"] == 0
+    assert data1["summary"]["failed"] == 0
+
+    # 2. Second batch re-uploading doc_alpha.txt with modified content
+    files_reupload = [
+        ("files", ("doc_alpha.txt", b"Alpha document updated content.", "text/plain")),
+    ]
+    res2 = client.post(
+        "/upload/batch/",
+        files=files_reupload,
+        data={"workspace_id": ws_id, "embedding_model": DEFAULT_EMBEDDING_MODEL},
+    )
+    assert res2.status_code == 200
+    data2 = res2.json()
+    assert data2["summary"]["successful"] == 0
+    assert data2["summary"]["upserts"] == 1
+    assert data2["results"][0]["status"] == "upserted"
+
+
+def test_upload_batch_mixed_validity_and_unnamed_streams() -> None:
+    """Verify batch ingestion isolates failures without halting valid streams in the array."""
+    ws_id = _create_test_workspace("Batch Mixed Validity WS")
+
+    files_mixed = [
+        ("files", ("valid_doc.txt", b"Valid text stream.", "text/plain")),
+        ("files", ("malicious.exe", b"binary executable payload", "application/octet-stream")),
+        ("files", ("   ", b"unnamed stream bytes", "text/plain")),  # Whitespace name passes HTTP protocol but fails our .strip() safeguard!
+    ]
+    res = client.post(
+        "/upload/batch/",
+        files=files_mixed,
+        data={"workspace_id": ws_id, "embedding_model": DEFAULT_EMBEDDING_MODEL},
+    )
+    assert res.status_code == 200
+    data = res.json()
+    assert data["summary"]["total_files"] == 3
+    assert data["summary"]["successful"] == 1
+    assert data["summary"]["failed"] == 2
+
+    failed_reasons = [r["error_message"] for r in data["results"] if r["status"] == "failed"]
+    assert any("Unsupported file type" in msg for msg in failed_reasons if msg)
+    assert any("Missing or empty filename" in msg for msg in failed_reasons if msg)
+
+# =====================================================================
+# --- 8. CONVERSATION HISTORY & THREAD LISTING TESTS ---
+# =====================================================================
+
+
+@patch("core.api.generate_answer")
+def test_list_threads_and_get_message_history(mock_generate) -> None:
+    """Verify thread list cards and chronological message turn retrieval."""
+    ws_id = _create_test_workspace("History Tracking WS")
+
+    # 1. Ingest dummy document so vector search finds context and triggers generate_answer
+    client.post(
+        "/upload/",
+        files={"file": ("dummy.txt", b"dummy context", "text/plain")},
+        data={"workspace_id": ws_id},
+    )
+
+    mock_generate.return_value = LLMInternalResponse(
+        text="Mocked historical response.", is_valid=True
+    )
+
+    # 2. Execute two RAG turns to build conversation history
+    ask1 = client.post(
+        "/ask/", json={"workspace_id": ws_id, "query": "First question?", "top_k": 1}
+    )
+    thread_id = ask1.json()["thread_id"]
+    client.post(
+        "/ask/",
+        json={
+            "workspace_id": ws_id,
+            "query": "Second follow-up?",
+            "thread_id": thread_id,
+            "top_k": 1,
+        },
+    )
+
+    # 3. Assert thread listing contract
+    threads_res = client.get(f"/workspaces/{ws_id}/threads")
+    assert threads_res.status_code == 200
+    t_data = threads_res.json()
+    assert t_data["workspace_id"] == ws_id
+    assert len(t_data["threads"]) == 1
+    assert t_data["threads"][0]["message_count"] == 4
+    assert t_data["threads"][0]["last_query"] == "Second follow-up?"
+
+    # 4. Assert message history contract
+    msgs_res = client.get(f"/threads/{thread_id}/messages")
+    assert msgs_res.status_code == 200
+    m_data = msgs_res.json()
+    assert m_data["thread_id"] == thread_id
+    assert len(m_data["messages"]) == 4
+    assert m_data["messages"][0]["role"] == "user"
+    assert m_data["messages"][0]["content"] == "First question?"
+    assert m_data["messages"][1]["role"] == "assistant"
+    assert m_data["messages"][3]["content"] == "Mocked historical response."
+
+
+# =====================================================================
+# --- 9. MODEL MISMATCH & DEFENSIVE BOUNDARY TESTS ---
+# =====================================================================
+
+
+def test_model_mismatch_safeguards() -> None:
+    """Verify strict 400 rejection when request models violate locked workspace dimensions."""
+    ws_id = _create_test_workspace("Locked Model WS")
+
+    different_model = "differentmodel:latest"
+
+    # 1. Upload mismatch
+    up_res = client.post(
+        "/upload/",
+        files={"file": ("test.txt", b"content", "text/plain")},
+        data={"workspace_id": ws_id, "embedding_model": different_model},
+    )
+    assert up_res.status_code == 400
+    assert "permanently locked" in up_res.json()["detail"]
+
+    # 2. Search mismatch
+    search_res = client.post(
+        "/search/",
+        json={"workspace_id": ws_id, "query": "test", "embedding_model": different_model},
+    )
+    assert search_res.status_code == 400
+    assert "locked model" in search_res.json()["detail"]
+
+    # 3. Ask mismatch
+    ask_res = client.post(
+        "/ask/",
+        json={"workspace_id": ws_id, "query": "test", "embedding_model": different_model},
+    )
+    assert ask_res.status_code == 400
+    assert "must match workspace" in ask_res.json()["detail"]
+
+
+def test_not_found_safeguards() -> None:
+    """Verify proper 404 HTTP exceptions for nonexistent resources across all read/write routes."""
+    fake_id = "nonexistent-uuid-9999"
+
+    assert client.get(f"/inventory/{fake_id}").status_code == 404
+    assert client.get(f"/workspaces/{fake_id}/threads").status_code == 404
+    assert client.get(f"/threads/{fake_id}/messages").status_code == 404
+    assert client.delete(f"/workspaces/{fake_id}").status_code == 404
+    assert client.delete(f"/documents/{fake_id}/some_file.txt").status_code == 404
+    assert client.delete(f"/threads/{fake_id}").status_code == 404
+
+    up_res = client.post(
+        "/upload/",
+        files={"file": ("test.txt", b"data", "text/plain")},
+        data={"workspace_id": fake_id},
+    )
+    assert up_res.status_code == 404
