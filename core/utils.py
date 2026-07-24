@@ -53,6 +53,30 @@ def get_embedding(text: str, model_name: str = DEFAULT_EMBEDDING_MODEL) -> List[
         raise
 
 
+def get_embeddings_batch(
+    texts: List[str],
+    model_name: str = DEFAULT_EMBEDDING_MODEL,
+    batch_size: int = 50,
+) -> List[List[float]]:
+    """Generates vector embeddings for a list of texts in batches using local Ollama."""
+    if not texts:
+        return []
+
+    target_model = normalize_model_name(model_name)
+    all_embeddings: List[List[float]] = []
+
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i : i + batch_size]
+        try:
+            response = ollama.embed(model=target_model, input=batch)
+            all_embeddings.extend(response["embeddings"])
+        except Exception as e:
+            logger.error(f"Ollama batch vector embedding failure [{target_model}]: {e}")
+            raise
+
+    return all_embeddings
+
+
 def generate_answer(
     query: str,
     context_chunks: List[dict],

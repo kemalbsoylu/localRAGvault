@@ -4,7 +4,15 @@ import psycopg
 from pgvector.psycopg import register_vector
 from psycopg.types.json import Jsonb
 
-from core.config import DB_HOST, DB_NAME, DB_PASSWORD, DB_PORT, DB_USER
+from core.config import (
+    DB_HOST,
+    DB_NAME,
+    DB_PASSWORD,
+    DB_PORT,
+    DB_USER,
+    DEFAULT_SIMILARITY_THRESHOLD,
+    DEFAULT_TOP_K,
+)
 from core.logging_config import logger
 
 
@@ -146,26 +154,34 @@ def insert_document_chunks(
     workspace_id: str,
     filename: str,
     file_path: str,
-    chunk_data: List[Tuple[int, str, List[float]]],  # Tuple: (chunk_index, text_chunk, embedding)
+    chunk_data: List[Tuple[int, str, List[float]]],
 ) -> int:
-    """Bulk inserts text chunks with explicit chunk indices and embeddings."""
-    inserted_chunks = 0
+    """Bulk inserts text chunks and vector embeddings using atomic executemany operations."""
+    if not chunk_data:
+        return 0
+
+    records = [
+        (workspace_id, filename, file_path, idx, chunk, embedding)
+        for idx, chunk, embedding in chunk_data
+        if embedding
+    ]
+
+    if not records:
+        return 0
+
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                for idx, chunk, embedding in chunk_data:
-                    if embedding:
-                        cur.execute(
-                            """
-                            INSERT INTO documents (workspace_id, filename, file_path, chunk_index, content, embedding)
-                            VALUES (%s, %s, %s, %s, %s, %s)
-                            """,
-                            (workspace_id, filename, file_path, idx, chunk, embedding),
-                        )
-                        inserted_chunks += 1
-        return inserted_chunks
+                cur.executemany(
+                    """
+                    INSERT INTO documents (workspace_id, filename, file_path, chunk_index, content, embedding)
+                    VALUES (%s, %s, %s, %s, %s, %s);
+                    """,
+                    records,
+                )
+        return len(records)
     except Exception as e:
-        logger.error(f"Database error while inserting document chunks for {filename}: {e}")
+        logger.error(f"Database error while batch inserting document chunks for {filename}: {e}")
         raise
 
 
@@ -196,8 +212,13 @@ def fetch_workspace_inventory(workspace_id: str) -> List[dict]:
         raise
 
 
-def search_vector_db(workspace_id: str, query_embedding: List[float], top_k: int) -> List[dict]:
-    """Performs a vector similarity search returning content along with filename and chunk_index."""
+def search_vector_db(
+    workspace_id: str,
+    query_embedding: List[float],
+    top_k: int = DEFAULT_TOP_K,
+    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+) -> List[dict]:
+    """Performs vector search against document chunks, enforcing similarity threshold filtering."""
     results = []
     try:
         with get_db_connection() as conn:
@@ -207,10 +228,18 @@ def search_vector_db(workspace_id: str, query_embedding: List[float], top_k: int
                     SELECT id, filename, chunk_index, content, 1 - (embedding <=> %s::vector) AS similarity
                     FROM documents
                     WHERE workspace_id = %s
+                      AND 1 - (embedding <=> %s::vector) >= %s
                     ORDER BY embedding <=> %s::vector
                     LIMIT %s;
                     """,
-                    (query_embedding, workspace_id, query_embedding, top_k),
+                    (
+                        query_embedding,
+                        workspace_id,
+                        query_embedding,
+                        similarity_threshold,
+                        query_embedding,
+                        top_k,
+                    ),
                 )
                 rows = cur.fetchall()
                 for row in rows:

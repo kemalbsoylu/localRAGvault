@@ -50,6 +50,7 @@ from core.utils import (
     generate_answer,
     get_available_models,
     get_embedding,
+    get_embeddings_batch,
     normalize_model_name,
     save_physical_file,
 )
@@ -281,7 +282,7 @@ def get_workspace_inventory(workspace_id: str) -> WorkspaceInventoryResponse:
 
 
 @app.post("/upload/", response_model=IngestionResponse)
-async def upload_document(
+def upload_document(
     workspace_id: str = Form(...),
     file: UploadFile = File(...),
     embedding_model: str = Form(DEFAULT_EMBEDDING_MODEL),
@@ -317,7 +318,6 @@ async def upload_document(
             detail=f"Model mismatch! Workspace '{ws['name']}' is permanently locked to '{ws['embedding_model']}'.",
         )
 
-    # Clean Upsert: Remove existing vector chunks if re-uploading an existing document name
     try:
         old_chunks = delete_document(workspace_id, file.filename)
         if old_chunks > 0:
@@ -330,7 +330,7 @@ async def upload_document(
             status_code=500, detail="Database failure during document update cleanup."
         ) from e
 
-    content_bytes = await file.read()
+    content_bytes = file.file.read()
     try:
         content_text = extract_text_from_file(content_bytes, file.filename)
     except ValueError as val_err:
@@ -347,11 +347,14 @@ async def upload_document(
         chunks = chunk_text(content_text)
         logger.info(f"Processing '{file.filename}' -> generated {len(chunks)} text blocks.")
 
-        chunk_data = []
-        for idx, chunk in enumerate(chunks, start=1):
-            embedding = get_embedding(chunk, model_name=embedding_model)
-            chunk_data.append((idx, chunk, embedding))
+        # Batch embedding generation
+        embeddings = get_embeddings_batch(chunks, model_name=embedding_model)
+        chunk_data = [
+            (idx, chunk, emb)
+            for idx, (chunk, emb) in enumerate(zip(chunks, embeddings, strict=True), start=1)
+        ]
 
+        # Batch DB insertion
         inserted_chunks = insert_document_chunks(
             workspace_id=workspace_id,
             filename=file.filename,
@@ -416,7 +419,7 @@ def remove_document(workspace_id: str, filename: str) -> dict:
 
 
 @app.post("/search/", response_model=VectorSearchResponse)
-async def search_documents(search: SearchQuery) -> VectorSearchResponse:
+def search_documents(search: SearchQuery) -> VectorSearchResponse:
     try:
         ws = get_workspace(search.workspace_id)
     except Exception as e:
@@ -475,7 +478,7 @@ async def search_documents(search: SearchQuery) -> VectorSearchResponse:
 
 
 @app.post("/ask/", response_model=RAGQueryResponse)
-async def ask_question(search: SearchQuery) -> RAGQueryResponse:
+def ask_question(search: SearchQuery) -> RAGQueryResponse:
     logger.info(
         f"Executing RAG pipeline for query: '{search.query}' in workspace {search.workspace_id}"
     )
@@ -488,7 +491,7 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
 
     if not ws:
         logger.warning(f"Ask aborted: Workspace '{search.workspace_id}' not found.")
-        raise HTTPException(status_code=404, detail="Workspace not found.")
+        raise HTTPException(status_code=404, detail="Target workspace does not exist.")
 
     if ws["embedding_model"] != search.embedding_model:
         logger.warning("Ask aborted: Model mismatch preventing vector collision.")
@@ -497,7 +500,6 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
             detail=f"Request embedding model must match workspace: '{ws['embedding_model']}'.",
         )
 
-    # 1. Thread Management: Resolve existing thread or create a new one
     thread_id = search.thread_id
     chat_history = []
     try:
@@ -505,7 +507,6 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
             if not get_thread(thread_id):
                 logger.warning(f"Ask aborted: Thread '{thread_id}' not found.")
                 raise HTTPException(status_code=404, detail=f"Thread '{thread_id}' not found.")
-            # Load previous turns to pass to the LLM for conversational awareness
             chat_history = get_thread_messages(thread_id, limit=6)
             logger.info(f"Loaded {len(chat_history)} historical messages for thread {thread_id}.")
         else:
@@ -522,7 +523,6 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
         ) from e
 
     try:
-        # 2. Vector Retrieval
         query_embedding = get_embedding(search.query, model_name=search.embedding_model)
         if not query_embedding:
             logger.error("Failed to generate query embedding for RAG.")
@@ -563,7 +563,6 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
                 sources=[],
             )
 
-        # 3. Execute LLM with structured chunk context AND chat history
         llm_response = generate_answer(
             query=search.query,
             context_chunks=raw_results,
@@ -575,7 +574,6 @@ async def ask_question(search: SearchQuery) -> RAGQueryResponse:
             logger.info("LLM returned context failure warning. Hiding document references.")
             sources = []
 
-        # 4. Persist turns to Database
         add_message(thread_id, "user", search.query, search.generation_model)
         add_message(
             thread_id,
