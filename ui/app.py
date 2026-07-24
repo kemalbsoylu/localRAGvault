@@ -217,7 +217,7 @@ if st.session_state.pending_upload:
             if res.status_code == 200:
                 res_data = res.json()
                 st.session_state.upload_success_msg = (
-                    f"✅ Success! {res_data['chunks_saved']} chunks saved for {res_data['filename']}."
+                    f"✅ Success! {res_data['chunks_saved']} chunks saved for '{res_data['filename']}'."
                 )
                 st.session_state.file_uploader_key += 1
             else:
@@ -233,6 +233,11 @@ if st.session_state.pending_upload:
 # =====================================================================
 
 threads = fetch_workspace_threads(active_workspace["id"]) if active_workspace else []
+
+# Guard against stale thread IDs when workspace switches
+if st.session_state.active_thread_id:
+    if not any(t["id"] == st.session_state.active_thread_id for t in threads):
+        st.session_state.active_thread_id = None
 
 if not active_workspace:
     st.info("👈 Create and select a workspace from the sidebar to begin.")
@@ -350,13 +355,12 @@ elif st.session_state.active_thread_id:
 
 # VIEW 2: STANDARD VAULT SEARCH VIEW
 else:
-    st.header("Search your Vault")
-
     st.caption(
         f"**Active Workspace:** `{active_workspace['name']}` | "
         f"**Embedding Model:** `{active_workspace['embedding_model']}` | "
         f"**Vector Dimensions:** `{active_workspace['dimension']}`"
     )
+    st.markdown("---")
 
     col_model, _ = st.columns([4, 6])
     with col_model:
