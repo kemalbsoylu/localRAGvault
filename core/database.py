@@ -2,6 +2,7 @@ from typing import List, Optional, Tuple
 
 import psycopg
 from pgvector.psycopg import register_vector
+from psycopg import sql
 from psycopg.types.json import Jsonb
 
 from core.config import (
@@ -10,7 +11,11 @@ from core.config import (
     DB_PASSWORD,
     DB_PORT,
     DB_USER,
+    DEFAULT_CHAT_HISTORY_LIMIT,
+    DEFAULT_CHUNK_OVERLAP,
+    DEFAULT_CHUNK_SIZE,
     DEFAULT_SIMILARITY_THRESHOLD,
+    DEFAULT_SYSTEM_PROMPT,
     DEFAULT_TOP_K,
 )
 from core.logging_config import logger
@@ -45,6 +50,12 @@ def init_db() -> None:
                         name TEXT NOT NULL UNIQUE,
                         embedding_model TEXT NOT NULL,
                         dimension INTEGER NOT NULL,
+                        chunk_size INTEGER NOT NULL DEFAULT 500,
+                        chunk_overlap INTEGER NOT NULL DEFAULT 100,
+                        top_k INTEGER NOT NULL DEFAULT 5,
+                        similarity_threshold REAL NOT NULL DEFAULT 0.15,
+                        chat_history_limit INTEGER NOT NULL DEFAULT 6,
+                        system_prompt TEXT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """)
@@ -86,30 +97,92 @@ def init_db() -> None:
         raise
 
 
-def create_workspace(workspace_id: str, name: str, embedding_model: str, dimension: int) -> None:
-    """Creates a new workspace, locking in its dimension size."""
+def create_workspace(
+    workspace_id: str,
+    name: str,
+    embedding_model: str,
+    dimension: int,
+    chunk_size: int = DEFAULT_CHUNK_SIZE,
+    chunk_overlap: int = DEFAULT_CHUNK_OVERLAP,
+    top_k: int = DEFAULT_TOP_K,
+    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
+    chat_history_limit: int = DEFAULT_CHAT_HISTORY_LIMIT,
+    system_prompt: Optional[str] = DEFAULT_SYSTEM_PROMPT,
+) -> None:
+    """Creates a new workspace, persisting its configuration parameters."""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO workspaces (id, name, embedding_model, dimension)
-                    VALUES (%s, %s, %s, %s)
+                    INSERT INTO workspaces (
+                        id, name, embedding_model, dimension, chunk_size, chunk_overlap,
+                        top_k, similarity_threshold, chat_history_limit, system_prompt
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (workspace_id, name, embedding_model, dimension),
+                    (
+                        workspace_id,
+                        name,
+                        embedding_model,
+                        dimension,
+                        chunk_size,
+                        chunk_overlap,
+                        top_k,
+                        similarity_threshold,
+                        chat_history_limit,
+                        system_prompt,
+                    ),
                 )
     except Exception as e:
         logger.error(f"Database error while creating workspace '{name}': {e}")
         raise
 
 
+def update_workspace_settings(workspace_id: str, settings: dict) -> Optional[dict]:
+    """Dynamically updates workspace hyperparameters and system instructions using safe SQL composition."""
+    allowed_keys = {
+        "chunk_size",
+        "chunk_overlap",
+        "top_k",
+        "similarity_threshold",
+        "chat_history_limit",
+        "system_prompt",
+    }
+    filtered_settings = {k: v for k, v in settings.items() if k in allowed_keys and v is not None}
+
+    if not filtered_settings:
+        return get_workspace(workspace_id)
+
+    set_clauses = [sql.SQL("{} = %s").format(sql.Identifier(k)) for k in filtered_settings.keys()]
+    values = list(filtered_settings.values())
+    values.append(workspace_id)
+
+    query = sql.SQL("UPDATE workspaces SET {} WHERE id = %s;").format(
+        sql.SQL(", ").join(set_clauses)
+    )
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, values)
+        return get_workspace(workspace_id)
+    except Exception as e:
+        logger.error(f"Database error updating settings for workspace '{workspace_id}': {e}")
+        raise
+
+
 def get_workspace(workspace_id: str) -> Optional[dict]:
-    """Retrieves workspace metadata by ID."""
+    """Retrieves full workspace metadata and configuration by ID."""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, name, embedding_model, dimension FROM workspaces WHERE id = %s",
+                    """
+                    SELECT id, name, embedding_model, dimension, chunk_size, chunk_overlap,
+                           top_k, similarity_threshold, chat_history_limit, system_prompt
+                    FROM workspaces WHERE id = %s
+                    """,
                     (workspace_id,),
                 )
                 row = cur.fetchone()
@@ -119,6 +192,12 @@ def get_workspace(workspace_id: str) -> Optional[dict]:
                         "name": row[1],
                         "embedding_model": row[2],
                         "dimension": row[3],
+                        "chunk_size": row[4],
+                        "chunk_overlap": row[5],
+                        "top_k": row[6],
+                        "similarity_threshold": float(row[7]),
+                        "chat_history_limit": row[8],
+                        "system_prompt": row[9],
                     }
         return None
     except Exception as e:
@@ -127,13 +206,17 @@ def get_workspace(workspace_id: str) -> Optional[dict]:
 
 
 def get_all_workspaces() -> List[dict]:
-    """Retrieves all available workspaces."""
+    """Retrieves all available workspaces with their complete configuration."""
     workspaces = []
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT id, name, embedding_model, dimension FROM workspaces ORDER BY created_at DESC;"
+                    """
+                    SELECT id, name, embedding_model, dimension, chunk_size, chunk_overlap,
+                           top_k, similarity_threshold, chat_history_limit, system_prompt
+                    FROM workspaces ORDER BY created_at DESC;
+                    """
                 )
                 for row in cur.fetchall():
                     workspaces.append(
@@ -142,6 +225,12 @@ def get_all_workspaces() -> List[dict]:
                             "name": row[1],
                             "embedding_model": row[2],
                             "dimension": row[3],
+                            "chunk_size": row[4],
+                            "chunk_overlap": row[5],
+                            "top_k": row[6],
+                            "similarity_threshold": float(row[7]),
+                            "chat_history_limit": row[8],
+                            "system_prompt": row[9],
                         }
                     )
         return workspaces
@@ -309,7 +398,6 @@ def get_workspace_threads(workspace_id: str) -> List[dict]:
                 for row in thread_rows:
                     t_id = row[0]
 
-                    # Get latest user query
                     cur.execute(
                         "SELECT content FROM messages WHERE thread_id = %s AND role = 'user' ORDER BY created_at DESC LIMIT 1;",
                         (t_id,),
@@ -317,7 +405,6 @@ def get_workspace_threads(workspace_id: str) -> List[dict]:
                     u_row = cur.fetchone()
                     last_query = u_row[0] if isinstance(u_row, tuple) else row[1]
 
-                    # Get latest assistant answer & metadata
                     cur.execute(
                         "SELECT content, model_used, sources FROM messages WHERE thread_id = %s AND role = 'assistant' ORDER BY created_at DESC LIMIT 1;",
                         (t_id,),
@@ -380,13 +467,12 @@ def add_message(
         raise
 
 
-def get_thread_messages(thread_id: str, limit: int = 10) -> List[dict]:
+def get_thread_messages(thread_id: str, limit: int = DEFAULT_CHAT_HISTORY_LIMIT) -> List[dict]:
     """Retrieves conversation history for a thread in chronological order."""
     messages = []
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                # Subquery gets latest N messages, outer query sorts them chronologically (oldest -> newest) for LLM context
                 cur.execute(
                     """
                     SELECT id, role, content, sources, model_used, created_at

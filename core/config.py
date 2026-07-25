@@ -18,21 +18,24 @@ DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")
 
 
-# Model Governance & Configuration
+# Infrastructure & Governance Configuration
+OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 ALLOW_CLOUD_MODELS = os.getenv("ALLOW_CLOUD_MODELS", "False").lower() in ("true", "1", "yes")
+MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "25"))
+
+
+# Model Default Selections
 DEFAULT_EMBEDDING_MODEL = os.getenv("DEFAULT_EMBEDDING_MODEL", "embeddinggemma:latest")
 DEFAULT_GENERATION_MODEL = os.getenv("DEFAULT_GENERATION_MODEL", "gemma3:latest")
 
 
-# RAG Hyperparameters (Chunking & Retrieval)
+# RAG Hyperparameter System Defaults
 DEFAULT_CHUNK_SIZE = int(os.getenv("DEFAULT_CHUNK_SIZE", "500"))
 DEFAULT_CHUNK_OVERLAP = int(os.getenv("DEFAULT_CHUNK_OVERLAP", "100"))
-DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "3"))
+DEFAULT_TOP_K = int(os.getenv("DEFAULT_TOP_K", "5"))
 DEFAULT_SIMILARITY_THRESHOLD = float(os.getenv("DEFAULT_SIMILARITY_THRESHOLD", "0.15"))
-
-
-# Conversation Memory Hyperparameters
 DEFAULT_CHAT_HISTORY_LIMIT = int(os.getenv("DEFAULT_CHAT_HISTORY_LIMIT", "6"))
+DEFAULT_SYSTEM_PROMPT = os.getenv("DEFAULT_SYSTEM_PROMPT", "")
 
 
 # File Storage Configuration

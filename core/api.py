@@ -5,7 +5,7 @@ from typing import AsyncGenerator, List
 import psycopg
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
-from core.config import DEFAULT_CHAT_HISTORY_LIMIT, DEFAULT_EMBEDDING_MODEL
+from core.config import DEFAULT_EMBEDDING_MODEL, MAX_FILE_SIZE_MB
 from core.database import (
     add_message,
     create_thread,
@@ -22,6 +22,7 @@ from core.database import (
     init_db,
     insert_document_chunks,
     search_vector_db,
+    update_workspace_settings,
 )
 from core.extractors import extract_text_from_file
 from core.logging_config import logger
@@ -44,6 +45,7 @@ from core.schemas import (
     WorkspaceCreate,
     WorkspaceInventoryResponse,
     WorkspaceResponse,
+    WorkspaceUpdate,
 )
 from core.utils import (
     chunk_text,
@@ -109,7 +111,7 @@ def list_workspaces() -> List[WorkspaceResponse]:
 
 @app.post("/workspaces/", response_model=WorkspaceResponse)
 def create_new_workspace(ws: WorkspaceCreate) -> WorkspaceResponse:
-    """Creates a new workspace and probes the embedding model to lock in vector dimensions."""
+    """Creates a new workspace with specified parameters and probes the embedding model."""
     logger.info(f"Probing embedding model '{ws.embedding_model}' for new workspace '{ws.name}'...")
 
     try:
@@ -129,8 +131,19 @@ def create_new_workspace(ws: WorkspaceCreate) -> WorkspaceResponse:
     workspace_id = str(uuid.uuid4())
 
     try:
-        create_workspace(workspace_id, ws.name, ws.embedding_model, dimension)
-        logger.info(f"Workspace '{ws.name}' ({workspace_id}) locked with dimension {dimension}.")
+        create_workspace(
+            workspace_id=workspace_id,
+            name=ws.name,
+            embedding_model=ws.embedding_model,
+            dimension=dimension,
+            chunk_size=ws.chunk_size,
+            chunk_overlap=ws.chunk_overlap,
+            top_k=ws.top_k,
+            similarity_threshold=ws.similarity_threshold,
+            chat_history_limit=ws.chat_history_limit,
+            system_prompt=ws.system_prompt,
+        )
+        logger.info(f"Workspace '{ws.name}' ({workspace_id}) created with dimension {dimension}.")
     except psycopg.errors.UniqueViolation as unique_err:
         logger.warning(f"Workspace creation rejected: Name '{ws.name}' already exists.")
         raise HTTPException(
@@ -143,9 +156,45 @@ def create_new_workspace(ws: WorkspaceCreate) -> WorkspaceResponse:
             status_code=500, detail="Failed to persist workspace in the database."
         ) from e
 
-    return WorkspaceResponse(
-        id=workspace_id, name=ws.name, embedding_model=ws.embedding_model, dimension=dimension
-    )
+    created_ws = get_workspace(workspace_id)
+    if not created_ws:
+        raise HTTPException(status_code=500, detail="Workspace created but failed to load.")
+    return WorkspaceResponse(**created_ws)
+
+
+@app.patch("/workspaces/{workspace_id}", response_model=WorkspaceResponse)
+def patch_workspace_settings(workspace_id: str, updates: WorkspaceUpdate) -> WorkspaceResponse:
+    """Updates workspace-level RAG hyperparameters and system instructions."""
+    try:
+        existing_ws = get_workspace(workspace_id)
+        if not existing_ws:
+            raise HTTPException(status_code=404, detail="Workspace not found.")
+
+        target_chunk_size = updates.chunk_size or existing_ws["chunk_size"]
+        target_chunk_overlap = (
+            updates.chunk_overlap
+            if updates.chunk_overlap is not None
+            else existing_ws["chunk_overlap"]
+        )
+
+        if target_chunk_overlap >= target_chunk_size:
+            raise HTTPException(
+                status_code=400,
+                detail=f"chunk_overlap ({target_chunk_overlap}) must be strictly less than chunk_size ({target_chunk_size}).",
+            )
+
+        updated_ws = update_workspace_settings(workspace_id, updates.model_dump(exclude_unset=True))
+        if not updated_ws:
+            raise HTTPException(status_code=500, detail="Failed to update workspace settings.")
+
+        logger.info(f"Workspace settings updated for '{workspace_id}'.")
+        return WorkspaceResponse(**updated_ws)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating workspace settings for {workspace_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update workspace settings.") from e
 
 
 @app.delete("/workspaces/{workspace_id}", response_model=dict)
@@ -289,8 +338,14 @@ def _process_single_file_ingestion(
     filename: str,
     content_bytes: bytes,
     embedding_model: str,
+    chunk_size: int,
+    chunk_overlap: int,
 ) -> tuple[int, int]:
-    """Internal helper to execute clean upserts, extraction, chunking, and batch DB insertion for a single file."""
+    """Internal helper to execute clean upserts, extraction, chunking, and batch DB insertion."""
+    max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
+    if len(content_bytes) > max_bytes:
+        raise ValueError(f"File '{filename}' exceeds maximum allowed size of {MAX_FILE_SIZE_MB}MB.")
+
     old_chunks = delete_document(workspace_id, filename)
     if old_chunks > 0:
         logger.info(
@@ -298,7 +353,7 @@ def _process_single_file_ingestion(
         )
 
     content_text = extract_text_from_file(content_bytes, filename)
-    chunks = chunk_text(content_text)
+    chunks = chunk_text(content_text, chunk_size=chunk_size, overlap=chunk_overlap)
     logger.info(f"Processing '{filename}' -> generated {len(chunks)} text blocks.")
 
     embeddings = get_embeddings_batch(chunks, model_name=embedding_model)
@@ -360,7 +415,12 @@ def upload_document(
     try:
         content_bytes = file.file.read()
         inserted_chunks, old_chunks = _process_single_file_ingestion(
-            workspace_id, file.filename, content_bytes, embedding_model
+            workspace_id,
+            file.filename,
+            content_bytes,
+            embedding_model,
+            chunk_size=ws["chunk_size"],
+            chunk_overlap=ws["chunk_overlap"],
         )
         logger.info(f"Successfully processed ingestion: {inserted_chunks} chunks saved.")
         return IngestionResponse(
@@ -451,7 +511,12 @@ def upload_documents_batch(
         try:
             content_bytes = file.file.read()
             inserted_chunks, old_chunks = _process_single_file_ingestion(
-                workspace_id, filename, content_bytes, embedding_model
+                workspace_id,
+                filename,
+                content_bytes,
+                embedding_model,
+                chunk_size=ws["chunk_size"],
+                chunk_overlap=ws["chunk_overlap"],
             )
 
             is_upsert = old_chunks > 0
@@ -563,6 +628,13 @@ def search_documents(search: SearchQuery) -> VectorSearchResponse:
             detail=f"Search must use the workspace's locked model: '{ws['embedding_model']}'.",
         )
 
+    effective_top_k = search.top_k if search.top_k is not None else ws["top_k"]
+    effective_threshold = (
+        search.similarity_threshold
+        if search.similarity_threshold is not None
+        else ws["similarity_threshold"]
+    )
+
     try:
         query_embedding = get_embedding(search.query, model_name=search.embedding_model)
         if not query_embedding:
@@ -574,7 +646,8 @@ def search_documents(search: SearchQuery) -> VectorSearchResponse:
         raw_results = search_vector_db(
             workspace_id=search.workspace_id,
             query_embedding=query_embedding,
-            top_k=search.top_k,
+            top_k=effective_top_k,
+            similarity_threshold=effective_threshold,
         )
 
         results = [
@@ -624,6 +697,19 @@ def ask_question(search: SearchQuery) -> RAGQueryResponse:
             detail=f"Request embedding model must match workspace: '{ws['embedding_model']}'.",
         )
 
+    effective_top_k = search.top_k if search.top_k is not None else ws["top_k"]
+    effective_threshold = (
+        search.similarity_threshold
+        if search.similarity_threshold is not None
+        else ws["similarity_threshold"]
+    )
+    effective_temp = search.temperature
+    effective_history_limit = (
+        search.chat_history_limit
+        if search.chat_history_limit is not None
+        else ws["chat_history_limit"]
+    )
+
     thread_id = search.thread_id
     chat_history = []
     try:
@@ -631,7 +717,7 @@ def ask_question(search: SearchQuery) -> RAGQueryResponse:
             if not get_thread(thread_id):
                 logger.warning(f"Ask aborted: Thread '{thread_id}' not found.")
                 raise HTTPException(status_code=404, detail=f"Thread '{thread_id}' not found.")
-            chat_history = get_thread_messages(thread_id, limit=DEFAULT_CHAT_HISTORY_LIMIT)
+            chat_history = get_thread_messages(thread_id, limit=effective_history_limit)
             logger.info(f"Loaded {len(chat_history)} historical messages for thread {thread_id}.")
         else:
             thread_id = str(uuid.uuid4())
@@ -655,7 +741,8 @@ def ask_question(search: SearchQuery) -> RAGQueryResponse:
         raw_results = search_vector_db(
             workspace_id=search.workspace_id,
             query_embedding=query_embedding,
-            top_k=search.top_k,
+            top_k=effective_top_k,
+            similarity_threshold=effective_threshold,
         )
 
         sources = [
@@ -692,7 +779,9 @@ def ask_question(search: SearchQuery) -> RAGQueryResponse:
             context_chunks=raw_results,
             model_name=search.generation_model,
             chat_history=chat_history,
-            top_k=search.top_k,
+            top_k=effective_top_k,
+            temperature=effective_temp,
+            system_prompt=ws["system_prompt"],
         )
 
         if not llm_response.is_valid:

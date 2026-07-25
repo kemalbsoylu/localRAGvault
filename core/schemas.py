@@ -1,18 +1,32 @@
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
-from core.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_GENERATION_MODEL, DEFAULT_TOP_K
+from core.config import (
+    DEFAULT_CHAT_HISTORY_LIMIT,
+    DEFAULT_CHUNK_OVERLAP,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_GENERATION_MODEL,
+    DEFAULT_SIMILARITY_THRESHOLD,
+    DEFAULT_TOP_K,
+)
 
 
 def normalize_tag(value: str) -> str:
-    """Helper to ensure models have a tag"""
+    """Helper to ensure models have an explicit tag."""
     return value if ":" in value else f"{value}:latest"
 
 
 class WorkspaceCreate(BaseModel):
     name: str = Field(..., description="Human-readable workspace name.")
     embedding_model: str = Field(..., description="The embedding model locked to this workspace.")
+    chunk_size: int = Field(default=DEFAULT_CHUNK_SIZE, ge=100, le=2000)
+    chunk_overlap: int = Field(default=DEFAULT_CHUNK_OVERLAP, ge=0, le=500)
+    top_k: int = Field(default=DEFAULT_TOP_K, ge=1, le=20)
+    similarity_threshold: float = Field(default=DEFAULT_SIMILARITY_THRESHOLD, ge=0.0, le=1.0)
+    chat_history_limit: int = Field(default=DEFAULT_CHAT_HISTORY_LIMIT, ge=1, le=20)
+    system_prompt: Optional[str] = Field(default=None)
 
     @field_validator("embedding_model", mode="before")
     @classmethod
@@ -21,12 +35,43 @@ class WorkspaceCreate(BaseModel):
             return normalize_tag(value)
         return value
 
+    @model_validator(mode="after")
+    def validate_overlap_bounds(self) -> "WorkspaceCreate":
+        if self.chunk_overlap >= self.chunk_size:
+            raise ValueError("chunk_overlap must be strictly less than chunk_size.")
+        return self
+
+
+class WorkspaceUpdate(BaseModel):
+    chunk_size: Optional[int] = Field(default=None, ge=100, le=2000)
+    chunk_overlap: Optional[int] = Field(default=None, ge=0, le=500)
+    top_k: Optional[int] = Field(default=None, ge=1, le=20)
+    similarity_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
+    chat_history_limit: Optional[int] = Field(default=None, ge=1, le=20)
+    system_prompt: Optional[str] = None
+
+    @model_validator(mode="after")
+    def validate_overlap_bounds(self) -> "WorkspaceUpdate":
+        if (
+            self.chunk_size is not None
+            and self.chunk_overlap is not None
+            and self.chunk_overlap >= self.chunk_size
+        ):
+            raise ValueError("chunk_overlap must be strictly less than chunk_size.")
+        return self
+
 
 class WorkspaceResponse(BaseModel):
     id: str
     name: str
     embedding_model: str
     dimension: int
+    chunk_size: int
+    chunk_overlap: int
+    top_k: int
+    similarity_threshold: float
+    chat_history_limit: int
+    system_prompt: Optional[str] = None
 
 
 class SearchQuery(BaseModel):
@@ -35,8 +80,17 @@ class SearchQuery(BaseModel):
     thread_id: Optional[str] = Field(
         default=None, description="Optional thread ID to continue an existing conversation."
     )
-    top_k: int = Field(
-        default=DEFAULT_TOP_K, ge=1, le=20, description="Number of context chunks to pull."
+    top_k: Optional[int] = Field(
+        default=None, ge=1, le=20, description="Override context chunks to pull."
+    )
+    similarity_threshold: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0, description="Override minimum similarity score."
+    )
+    temperature: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0, description="Optional override for LLM temperature."
+    )
+    chat_history_limit: Optional[int] = Field(
+        default=None, ge=1, le=20, description="Override historical message context limit."
     )
     embedding_model: str = Field(
         default=DEFAULT_EMBEDDING_MODEL, description="Target vector space model."
@@ -148,7 +202,7 @@ class WorkspaceInventoryResponse(BaseModel):
 
 class FileIngestionResult(BaseModel):
     filename: str
-    status: str  # "success", "upserted", "failed"
+    status: str
     chunks_saved: int = 0
     error_message: Optional[str] = None
 

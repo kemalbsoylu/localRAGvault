@@ -12,10 +12,13 @@ from core.config import (
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_GENERATION_MODEL,
     DEFAULT_TOP_K,
+    OLLAMA_BASE_URL,
     UPLOAD_DIR,
 )
 from core.logging_config import logger
 from core.schemas import LLMInternalResponse
+
+ollama_client = ollama.Client(host=OLLAMA_BASE_URL)
 
 
 def normalize_model_name(model_name: str) -> str:
@@ -35,20 +38,24 @@ def chunk_text(
     start = 0
     text_length = len(text)
 
+    if overlap >= chunk_size:
+        raise ValueError("chunk_overlap must be strictly less than chunk_size.")
+
+    step = chunk_size - overlap
     while start < text_length:
         end = start + chunk_size
         chunk = text[start:end]
         chunks.append(chunk)
-        start += chunk_size - overlap
+        start += step
 
     return chunks
 
 
 def get_embedding(text: str, model_name: str = DEFAULT_EMBEDDING_MODEL) -> List[float]:
-    """Generates a vector embedding for the given text using local Ollama."""
+    """Generates a vector embedding for the given text using Ollama daemon."""
     target_model = normalize_model_name(model_name)
     try:
-        response = ollama.embeddings(model=target_model, prompt=text)
+        response = ollama_client.embeddings(model=target_model, prompt=text)
         return response["embedding"]
     except Exception as e:
         logger.error(f"Ollama vector embedding engine failure [{target_model}]: {e}")
@@ -60,7 +67,7 @@ def get_embeddings_batch(
     model_name: str = DEFAULT_EMBEDDING_MODEL,
     batch_size: int = 50,
 ) -> List[List[float]]:
-    """Generates vector embeddings for a list of texts in batches using local Ollama."""
+    """Generates vector embeddings for a list of texts in batches using Ollama daemon."""
     if not texts:
         return []
 
@@ -70,7 +77,7 @@ def get_embeddings_batch(
     for i in range(0, len(texts), batch_size):
         batch = texts[i : i + batch_size]
         try:
-            response = ollama.embed(model=target_model, input=batch)
+            response = ollama_client.embed(model=target_model, input=batch)
             all_embeddings.extend(response["embeddings"])
         except Exception as e:
             logger.error(f"Ollama batch vector embedding failure [{target_model}]: {e}")
@@ -85,12 +92,13 @@ def generate_answer(
     model_name: str = DEFAULT_GENERATION_MODEL,
     chat_history: Optional[List[dict]] = None,
     top_k: int = DEFAULT_TOP_K,
+    temperature: Optional[float] = None,
+    system_prompt: Optional[str] = None,
 ) -> LLMInternalResponse:
     """Sends retrieved context, enriched chat history, and user query to the local LLM."""
     target_model = normalize_model_name(model_name)
     fallback_msg = "I cannot answer this based on the provided documents."
 
-    # 1. Format active context chunks with clear visual boundaries
     formatted_context_blocks = []
     for item in context_chunks:
         block = (
@@ -101,7 +109,6 @@ def generate_answer(
 
     context_text = "\n\n---\n\n".join(formatted_context_blocks)
 
-    # 2. Format conversation history and inject historical source attribution
     history_block = ""
     if chat_history:
         formatted_turns = []
@@ -109,7 +116,6 @@ def generate_answer(
             role_label = "User" if msg["role"] == "user" else "Assistant"
             turn_text = f"{role_label}: {msg['content']}"
 
-            # Dynamically slice historical citations to match active retrieval depth (top_k)
             if msg["role"] == "assistant" and msg.get("sources"):
                 source_labels = [
                     f"{s['filename']} (Chunk #{s.get('chunk_index', '?')})"
@@ -124,10 +130,15 @@ def generate_answer(
             history_str = "\n".join(formatted_turns)
             history_block = f"\n### Previous Conversation History:\n{history_str}\n"
 
-    # 3. Assemble prompt: Rules -> Memory -> Active Context -> Question
+    custom_instructions = (
+        f"\n### Additional Workspace System Persona/Instructions:\n{system_prompt}\n"
+        if system_prompt and system_prompt.strip()
+        else ""
+    )
+
     prompt = f"""You are a knowledgeable, analytical assistant for a private document vault.
 Your task is to answer the user's question by synthesizing and explaining information from the provided document chunks and conversation history.
-
+{custom_instructions}
 ### Strict Operating Rules:
 1. Ground your reasoning strictly in the provided context chunks and conversation history. Do NOT use outside knowledge or assume facts not directly supported by the text.
 2. When referencing information from specific documents, cite the document name inline where appropriate.
@@ -144,8 +155,14 @@ Your task is to answer the user's question by synthesizing and explaining inform
 
 ### Answer:"""
 
+    options_dict = {"temperature": temperature} if temperature is not None else None
+
     try:
-        response = ollama.generate(model=target_model, prompt=prompt)
+        response = ollama_client.generate(
+            model=target_model,
+            prompt=prompt,
+            options=options_dict,
+        )
         answer_text = response["response"].strip()
         is_valid = fallback_msg not in answer_text
 
@@ -177,7 +194,9 @@ Your task is to answer the user's question by synthesizing and explaining inform
         elif e.status_code == 500:
             friendly_msg = f"Internal server error (status code: 500): The local engine process crashed while running model '{target_model}'."
         elif e.status_code == 502:
-            friendly_msg = f"Bad gateway (status code: 502): Could not reach cloud model endpoints for '{target_model}'."
+            friendly_msg = (
+                f"Bad gateway (status code: 502): Could not reach endpoints for '{target_model}'."
+            )
         else:
             friendly_msg = f"Ollama service error (status code: {e.status_code}): {e.error}"
 
@@ -186,18 +205,18 @@ Your task is to answer the user's question by synthesizing and explaining inform
     except Exception as e:
         logger.error(f"Unexpected execution error under [{target_model}]: {e}")
         return LLMInternalResponse(
-            text="Connection to local Ollama daemon failed. Ensure the Ollama service is running locally.",
+            text="Connection to local Ollama daemon failed. Ensure the Ollama service is running.",
             is_valid=False,
         )
 
 
 def get_available_models() -> List[str]:
     """
-    Fetches a list of installed models directly from local Ollama.
+    Fetches installed models directly from Ollama.
     Enforces local-only privacy rules if ALLOW_CLOUD_MODELS is disabled.
     """
     try:
-        response = ollama.list()
+        response = ollama_client.list()
         models = [normalize_model_name(m.model) for m in response.models if m.model is not None]
 
         if not ALLOW_CLOUD_MODELS:
@@ -224,7 +243,7 @@ def ensure_default_models_exist() -> None:
                     f"Model '{target_model}' missing locally. Initiating auto-pull (this may take a few minutes)..."
                 )
                 try:
-                    ollama.pull(target_model)
+                    ollama_client.pull(target_model)
                     logger.info(f"Successfully downloaded and registered '{target_model}'.")
                 except Exception as pull_err:
                     logger.error(
