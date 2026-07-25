@@ -33,6 +33,10 @@ if "file_uploader_key" not in st.session_state:
     st.session_state.file_uploader_key = 0
 if "flash_msg" not in st.session_state:
     st.session_state.flash_msg = None
+if "ws_name_input_key" not in st.session_state:
+    st.session_state.ws_name_input_key = 0
+if "search_input_key" not in st.session_state:
+    st.session_state.search_input_key = 0
 
 
 def get_error_msg(response: requests.Response) -> str:
@@ -126,6 +130,7 @@ with st.sidebar:
                 "Workspace Name",
                 placeholder="e.g., Financial Reports",
                 disabled=st.session_state.is_processing,
+                key=f"new_ws_name_input_{st.session_state.ws_name_input_key}",
                 help="A unique identifier for your document vault.",
             )
             new_ws_embed = st.selectbox(
@@ -335,30 +340,39 @@ with st.sidebar:
                 )
 
                 if btn_save_settings:
-                    patch_payload = {
-                        "chunk_size": cfg_chunk_size,
-                        "chunk_overlap": cfg_chunk_overlap,
-                        "top_k": cfg_top_k,
-                        "similarity_threshold": cfg_similarity,
-                        "chat_history_limit": cfg_history_limit,
-                        "system_prompt": cfg_system_prompt.strip()
-                        if cfg_system_prompt.strip()
-                        else None,
-                    }
-                    try:
-                        patch_res = requests.patch(
-                            f"{API_URL}/workspaces/{active_workspace['id']}", json=patch_payload
-                        )
-                        if patch_res.status_code == 200:
-                            st.session_state.flash_msg = (
-                                "success",
-                                "Workspace settings updated successfully!",
+                    new_prompt_val = cfg_system_prompt.strip() if cfg_system_prompt.strip() else None
+                    if (
+                        cfg_chunk_size == active_workspace["chunk_size"]
+                        and cfg_chunk_overlap == active_workspace["chunk_overlap"]
+                        and cfg_top_k == active_workspace["top_k"]
+                        and round(cfg_similarity, 4) == round(float(active_workspace["similarity_threshold"]), 4)
+                        and cfg_history_limit == active_workspace["chat_history_limit"]
+                        and new_prompt_val == active_workspace["system_prompt"]
+                    ):
+                        st.info("ℹ️ No changes detected. Settings were not modified.")
+                    else:
+                        patch_payload = {
+                            "chunk_size": cfg_chunk_size,
+                            "chunk_overlap": cfg_chunk_overlap,
+                            "top_k": cfg_top_k,
+                            "similarity_threshold": cfg_similarity,
+                            "chat_history_limit": cfg_history_limit,
+                            "system_prompt": new_prompt_val,
+                        }
+                        try:
+                            patch_res = requests.patch(
+                                f"{API_URL}/workspaces/{active_workspace['id']}", json=patch_payload
                             )
-                            st.rerun()
-                        else:
-                            st.error(f"Failed to update settings: {get_error_msg(patch_res)}")
-                    except requests.exceptions.ConnectionError:
-                        st.error("Backend is unreachable.")
+                            if patch_res.status_code == 200:
+                                st.session_state.flash_msg = (
+                                    "success",
+                                    "Workspace settings updated successfully!",
+                                )
+                                st.rerun()
+                            else:
+                                st.error(f"Failed to update settings: {get_error_msg(patch_res)}")
+                        except requests.exceptions.ConnectionError:
+                            st.error("Backend is unreachable.")
 
         # Workspace Deletion UI
         with st.expander("⚠️ Danger Zone: Delete Workspace"):
@@ -405,6 +419,7 @@ if st.session_state.pending_workspace:
                 json={"name": pw["name"], "embedding_model": pw["embedding_model"]},
             )
             if res.status_code == 200:
+                st.session_state.ws_name_input_key += 1
                 st.session_state.flash_msg = (
                     "success",
                     f"Workspace is created with {res.json()['dimension']} dimensions!",
@@ -434,7 +449,6 @@ if st.session_state.pending_batch_upload:
                 st.session_state.batch_report = report_data
                 st.session_state.file_uploader_key += 1
 
-                # Trigger an immediate top-level flash notification!
                 sum_data = report_data["summary"]
                 if sum_data["failed"] == 0:
                     st.session_state.flash_msg = (
@@ -639,6 +653,7 @@ else:
             "What would you like to know?",
             placeholder="Enter your query",
             disabled=st.session_state.is_processing,
+            key=f"search_query_input_{st.session_state.search_input_key}",
         )
         submit_button = st.form_submit_button(
             label="Search & Generate", disabled=st.session_state.is_processing
@@ -647,6 +662,7 @@ else:
     if submit_button and query:
         st.session_state.is_processing = True
         st.session_state.current_query = query
+        st.session_state.search_input_key += 1
         st.rerun()
 
     if st.session_state.is_processing and st.session_state.current_query:
