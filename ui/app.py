@@ -6,7 +6,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 import requests
 import streamlit as st
 
-from core.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_GENERATION_MODEL
+from core.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_GENERATION_MODEL, MAX_FILE_SIZE_MB
 
 API_URL = "http://127.0.0.1:8000"
 
@@ -31,6 +31,8 @@ if "batch_report" not in st.session_state:
     st.session_state.batch_report = None
 if "file_uploader_key" not in st.session_state:
     st.session_state.file_uploader_key = 0
+if "flash_msg" not in st.session_state:
+    st.session_state.flash_msg = None
 
 
 def get_error_msg(response: requests.Response) -> str:
@@ -71,6 +73,24 @@ def fetch_workspace_threads(workspace_id: str):
     return []
 
 
+# --- Render Sleek Dismissible Flash Feedback Banner ---
+if st.session_state.flash_msg:
+    msg_type, msg_text = st.session_state.flash_msg
+
+    col_msg, col_close = st.columns([98, 2])
+    with col_msg:
+        if msg_type == "success":
+            st.success(msg_text, icon="✅")
+        elif msg_type == "error":
+            st.error(msg_text, icon="🚨")
+        else:
+            st.info(msg_text, icon="ℹ️")
+    with col_close:
+        if st.button("✕", key="btn_dismiss_flash", type="tertiary", help="Dismiss notification"):
+            st.session_state.flash_msg = None
+            st.rerun()
+
+
 available_models = fetch_available_models()
 workspaces = fetch_workspaces()
 
@@ -83,7 +103,7 @@ default_gen_idx = next(
     (i for i, m in enumerate(generation_options) if m == st.session_state.selected_gen_model), 0
 )
 
-# --- Sidebar (Workspaces & Document Ingestion) ---
+# --- Sidebar (Workspace Administration & Settings) ---
 with st.sidebar:
     st.header("Workspaces")
     active_workspace = None
@@ -94,24 +114,26 @@ with st.sidebar:
             options=list(ws_options.keys()),
             format_func=lambda x: ws_options[x],
             disabled=st.session_state.is_processing,
+            help="Switch between different indexed document vaults.",
         )
         active_workspace = next((ws for ws in workspaces if ws["id"] == selected_ws_id), None)
     else:
         st.warning("No workspaces found. Create one below to begin.")
 
-    # Workspace Creation Form
     with st.expander("➕ Create New Workspace", expanded=not workspaces):
         with st.form("create_workspace_form"):
             new_ws_name = st.text_input(
                 "Workspace Name",
                 placeholder="e.g., Financial Reports",
                 disabled=st.session_state.is_processing,
+                help="A unique identifier for your document vault.",
             )
             new_ws_embed = st.selectbox(
                 "Embedding Model",
                 options=embedding_options,
                 index=default_embed_idx,
                 disabled=st.session_state.is_processing,
+                help="The mathematical vector space engine locked to this workspace. Once created, all documents must be embedded using this exact model to prevent dimension collisions.",
             )
             submit_workspace = st.form_submit_button(
                 "Create & Lock Dimensions", disabled=st.session_state.is_processing
@@ -132,15 +154,14 @@ with st.sidebar:
         st.markdown("---")
         st.header("Add to Vault")
 
-        # Ingestion Report View
         if st.session_state.batch_report:
             rep = st.session_state.batch_report
             with st.container(border=True):
-                col_title, col_close = st.columns([7, 3])
+                col_title, col_close = st.columns([9, 1])
                 with col_title:
                     st.subheader("📊 Ingestion Report")
                 with col_close:
-                    if st.button("❌", key="btn_dismiss_rep", use_container_width=True):
+                    if st.button("✕", key="btn_dismiss_rep", type="tertiary", help="Close report"):
                         st.session_state.batch_report = None
                         st.rerun()
 
@@ -169,34 +190,44 @@ with st.sidebar:
                                 f"✅ **{item['filename']}** — *New* ({item['chunks_saved']} chunks saved)"
                             )
 
-        # Multi-File & Folder Ingestion Form
+        # Multi-File Upload Form with Frontend Size Validation
         with st.form("upload_form"):
             uploaded_files = st.file_uploader(
-                "Upload documents",
+                f"Upload documents (Max {MAX_FILE_SIZE_MB}MB per file)",
                 type=["txt", "md", "pdf", "docx", "csv", "json"],
                 accept_multiple_files=True,
                 disabled=st.session_state.is_processing,
                 key=f"file_uploader_{st.session_state.file_uploader_key}",
-                help="Select multiple files or folders. Overwrites existing identical file names cleanly.",
+                help="Select multiple files or folders. Identical file names replace existing versions cleanly without duplicating vector embeddings.",
             )
             submit_upload = st.form_submit_button(
                 "Ingest Documents", disabled=st.session_state.is_processing
             )
 
             if submit_upload and uploaded_files:
-                st.session_state.is_processing = True
-                st.session_state.pending_batch_upload = {
-                    "files": [(f.name, f.getvalue()) for f in uploaded_files],
-                    "workspace_id": active_workspace["id"],
-                    "embedding_model": active_workspace["embedding_model"],
-                }
-                st.rerun()
+                max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
+                oversized_files = [f.name for f in uploaded_files if f.size > max_bytes]
+
+                if oversized_files:
+                    st.error(
+                        f"Upload blocked: The following files exceed the {MAX_FILE_SIZE_MB}MB limit: {', '.join(oversized_files)}"
+                    )
+                else:
+                    st.session_state.is_processing = True
+                    st.session_state.pending_batch_upload = {
+                        "files": [(f.name, f.getvalue()) for f in uploaded_files],
+                        "workspace_id": active_workspace["id"],
+                        "embedding_model": active_workspace["embedding_model"],
+                    }
+                    st.rerun()
             elif submit_upload:
                 st.warning("Please select at least one file first.")
 
         st.markdown("---")
         st.header(f"📂 Inventory: {active_workspace['name']}")
-        if st.button("Refresh Inventory", disabled=st.session_state.is_processing):
+        if st.button(
+            "Refresh Inventory", disabled=st.session_state.is_processing, use_container_width=True
+        ):
             st.rerun()
 
         try:
@@ -224,7 +255,10 @@ with st.sidebar:
                                         f"{API_URL}/documents/{active_workspace['id']}/{doc['filename']}"
                                     )
                                     if del_res.status_code == 200:
-                                        st.success(f"Deleted '{doc['filename']}'.")
+                                        st.session_state.flash_msg = (
+                                            "success",
+                                            f"Deleted '{doc['filename']}'.",
+                                        )
                                         st.rerun()
                                     else:
                                         st.error(f"Deletion failed: {get_error_msg(del_res)}")
@@ -235,14 +269,102 @@ with st.sidebar:
         except requests.exceptions.ConnectionError:
             st.error("Backend unreachable.")
 
-        # Workspace Deletion UI
+        # --- PER-WORKSPACE RAG SETTINGS ---
         st.markdown("---")
+        with st.expander("⚙️ Workspace Settings", expanded=False):
+            st.caption("Note: Chunking physics apply strictly to subsequent file ingestions.")
+            with st.form(key=f"ws_settings_form_{active_workspace['id']}"):
+                cfg_chunk_size = st.slider(
+                    "Chunk Size (chars)",
+                    min_value=100,
+                    max_value=2000,
+                    value=active_workspace["chunk_size"],
+                    step=50,
+                    help="Determines the character length of each individual text block when splitting ingested documents. Larger chunks capture broader context; smaller chunks isolate specific facts.",
+                )
+
+                max_allowed_overlap = min(500, int(cfg_chunk_size * 0.5))
+                current_overlap = min(active_workspace["chunk_overlap"], max_allowed_overlap)
+
+                cfg_chunk_overlap = st.slider(
+                    "Chunk Overlap (chars)",
+                    min_value=0,
+                    max_value=max_allowed_overlap,
+                    value=current_overlap,
+                    step=10,
+                    help="The number of overlapping characters between adjacent chunks. This acts as a semantic bridge so context is not split awkwardly at chunk boundaries.",
+                )
+
+                cfg_top_k = st.slider(
+                    "Top-K Retrieval Depth",
+                    min_value=1,
+                    max_value=20,
+                    value=active_workspace["top_k"],
+                    step=1,
+                    help="The maximum number of relevant document chunks retrieved from PostgreSQL vector search and injected into the LLM's prompt context.",
+                )
+
+                cfg_similarity = st.slider(
+                    "Similarity Threshold",
+                    min_value=0.0,
+                    max_value=0.8,
+                    value=float(active_workspace["similarity_threshold"]),
+                    step=0.05,
+                    help="The minimum cosine similarity score (0.0 to 1.0) required for a chunk to be considered relevant. Higher values enforce stricter filtering against off-topic chunks.",
+                )
+
+                cfg_history_limit = st.slider(
+                    "Memory Depth (turns)",
+                    min_value=1,
+                    max_value=20,
+                    value=active_workspace["chat_history_limit"],
+                    step=1,
+                    help="The number of recent conversational turns (user queries and assistant replies) included in the memory payload to maintain multi-turn context.",
+                )
+
+                cfg_system_prompt = st.text_area(
+                    "System Instructions / Persona",
+                    value=active_workspace["system_prompt"] or "",
+                    placeholder="e.g., Respond using concise technical bullet points.",
+                    height=100,
+                    help="Custom behavioral persona or strict operational instructions injected at the top of the LLM prompt hierarchy.",
+                )
+
+                btn_save_settings = st.form_submit_button(
+                    "💾 Save Settings", use_container_width=True
+                )
+
+                if btn_save_settings:
+                    patch_payload = {
+                        "chunk_size": cfg_chunk_size,
+                        "chunk_overlap": cfg_chunk_overlap,
+                        "top_k": cfg_top_k,
+                        "similarity_threshold": cfg_similarity,
+                        "chat_history_limit": cfg_history_limit,
+                        "system_prompt": cfg_system_prompt.strip()
+                        if cfg_system_prompt.strip()
+                        else None,
+                    }
+                    try:
+                        patch_res = requests.patch(
+                            f"{API_URL}/workspaces/{active_workspace['id']}", json=patch_payload
+                        )
+                        if patch_res.status_code == 200:
+                            st.session_state.flash_msg = (
+                                "success",
+                                "Workspace settings updated successfully!",
+                            )
+                            st.rerun()
+                        else:
+                            st.error(f"Failed to update settings: {get_error_msg(patch_res)}")
+                    except requests.exceptions.ConnectionError:
+                        st.error("Backend is unreachable.")
+
+        # Workspace Deletion UI
         with st.expander("⚠️ Danger Zone: Delete Workspace"):
-            st.warning(
-                "Permanently deletes workspace, conversation history, and indexed physical files."
-            )
+            st.warning("Permanently deletes workspace, history, and physical files.")
             confirm_del_ws = st.checkbox(
-                "Confirm workspace destruction",
+                "Confirm destruction",
                 key=f"chk_del_ws_{active_workspace['id']}",
             )
             if st.button(
@@ -260,7 +382,10 @@ with st.sidebar:
                             st.session_state.current_query = ""
                             st.session_state.batch_report = None
                             st.session_state.pop(f"chk_del_ws_{active_workspace['id']}", None)
-                            st.success(f"Workspace '{active_workspace['name']}' deleted.")
+                            st.session_state.flash_msg = (
+                                "success",
+                                f"Workspace '{active_workspace['name']}' deleted.",
+                            )
                             st.rerun()
                         else:
                             st.error(f"Failed to delete workspace: {get_error_msg(del_ws_res)}")
@@ -280,11 +405,14 @@ if st.session_state.pending_workspace:
                 json={"name": pw["name"], "embedding_model": pw["embedding_model"]},
             )
             if res.status_code == 200:
-                st.success(f"Workspace locked to {res.json()['dimension']} dimensions!")
+                st.session_state.flash_msg = (
+                    "success",
+                    f"Workspace is created with {res.json()['dimension']} dimensions!",
+                )
             else:
-                st.error(f"Error: {get_error_msg(res)}")
+                st.session_state.flash_msg = ("error", f"Error: {get_error_msg(res)}")
         except requests.exceptions.ConnectionError:
-            st.error("Backend unreachable. Is FastAPI running?")
+            st.session_state.flash_msg = ("error", "Backend unreachable. Is FastAPI running?")
     st.session_state.is_processing = False
     st.rerun()
 
@@ -302,12 +430,26 @@ if st.session_state.pending_batch_upload:
         try:
             res = requests.post(f"{API_URL}/upload/batch/", files=files_payload, data=data_payload)
             if res.status_code == 200:
-                st.session_state.batch_report = res.json()
+                report_data = res.json()
+                st.session_state.batch_report = report_data
                 st.session_state.file_uploader_key += 1
+
+                # Trigger an immediate top-level flash notification!
+                sum_data = report_data["summary"]
+                if sum_data["failed"] == 0:
+                    st.session_state.flash_msg = (
+                        "success",
+                        f"Batch ingestion complete! Processed {sum_data['successful']} new and {sum_data['upserts']} updated files ({sum_data['total_chunks_saved']} chunks saved).",
+                    )
+                else:
+                    st.session_state.flash_msg = (
+                        "error",
+                        f"Batch ingestion finished with errors: {sum_data['failed']} file(s) failed to ingest. Check report from the sidebar.",
+                    )
             else:
-                st.error(f"Batch upload failed: {get_error_msg(res)}")
+                st.session_state.flash_msg = ("error", f"Batch upload failed: {get_error_msg(res)}")
         except requests.exceptions.ConnectionError:
-            st.error("Backend unreachable.")
+            st.session_state.flash_msg = ("error", "Backend unreachable.")
     st.session_state.is_processing = False
     st.rerun()
 
@@ -381,13 +523,13 @@ elif st.session_state.active_thread_id:
         st.error("Backend unreachable.")
 
     st.markdown("---")
-    col_model, col_temp = st.columns([6, 4])
+    col_model, col_temp, _ = st.columns([2, 2, 6])
     with col_model:
         st.session_state.selected_gen_model = st.selectbox(
             "⚙️ Generation LLM:",
             options=generation_options,
             index=default_gen_idx,
-            help="Switch generation model on the fly during this conversation.",
+            help="Switch generation model on the fly during this conversation without losing chat context.",
             disabled=st.session_state.is_processing,
             key="chat_llm_select",
         )
@@ -397,7 +539,7 @@ elif st.session_state.active_thread_id:
             "Override Temperature",
             value=False,
             key="toggle_temp_chat",
-            help="Leave off to use the model's native default settings.",
+            help="Leave off to use the model's native Modelfile calibration. Turn on to force custom sampling randomness.",
         )
         if override_temp_chat:
             chat_temp_val = st.slider(
@@ -407,6 +549,7 @@ elif st.session_state.active_thread_id:
                 value=0.2,
                 step=0.05,
                 key="slider_temp_chat",
+                help="Higher values increase randomness and creativity; lower values make responses more deterministic and analytical.",
             )
         else:
             chat_temp_val = None
@@ -448,7 +591,7 @@ elif st.session_state.active_thread_id:
         st.rerun()
 
 
-# VIEW 2: STANDARD VAULT SEARCH & SETTINGS VIEW
+# VIEW 2: STANDARD VAULT SEARCH VIEW
 else:
     st.header(f"🗃️ {active_workspace['name']}")
 
@@ -458,111 +601,15 @@ else:
         f"**Vector Dimensions:** `{active_workspace['dimension']}`"
     )
 
-    # --- PER-WORKSPACE RAG SETTINGS PANEL ---
-    with st.expander("⚙️ Workspace RAG Settings", expanded=False):
-        st.markdown(
-            "Customize chunking physics, vector search bounds, and memory context for this workspace."
-        )
-
-        with st.form(key=f"ws_settings_form_{active_workspace['id']}"):
-            col_s1, col_s2 = st.columns(2)
-
-            with col_s1:
-                st.subheader("Chunking & Extraction")
-                cfg_chunk_size = st.slider(
-                    "Chunk Size (characters)",
-                    min_value=100,
-                    max_value=2000,
-                    value=active_workspace["chunk_size"],
-                    step=50,
-                    help="Determines granularity when splitting new documents.",
-                )
-
-                max_allowed_overlap = min(500, int(cfg_chunk_size * 0.5))
-                current_overlap = min(active_workspace["chunk_overlap"], max_allowed_overlap)
-
-                cfg_chunk_overlap = st.slider(
-                    "Chunk Overlap (characters)",
-                    min_value=0,
-                    max_value=max_allowed_overlap,
-                    value=current_overlap,
-                    step=10,
-                    help="Context bridge between adjacent text blocks.",
-                )
-
-            with col_s2:
-                st.subheader("Vector Search & Memory")
-                cfg_top_k = st.slider(
-                    "Top-K Chunks to Retrieve",
-                    min_value=1,
-                    max_value=20,
-                    value=active_workspace["top_k"],
-                    step=1,
-                    help="Maximum context blocks injected into LLM prompt.",
-                )
-
-                cfg_similarity = st.slider(
-                    "Similarity Threshold Score",
-                    min_value=0.0,
-                    max_value=0.8,
-                    value=float(active_workspace["similarity_threshold"]),
-                    step=0.05,
-                    help="Minimum vector similarity score required to include a document chunk.",
-                )
-
-                cfg_history_limit = st.slider(
-                    "Conversation Memory Depth (turns)",
-                    min_value=1,
-                    max_value=20,
-                    value=active_workspace["chat_history_limit"],
-                    step=1,
-                    help="Number of historical messages passed to LLM context.",
-                )
-
-            st.markdown("---")
-            cfg_system_prompt = st.text_area(
-                "Workspace System Instructions / Persona",
-                value=active_workspace["system_prompt"] or "",
-                placeholder="e.g., Always respond using concise technical bullet points.",
-                height=110,
-            )
-
-            btn_save_settings = st.form_submit_button(
-                "💾 Save Workspace Settings", use_container_width=True
-            )
-
-            if btn_save_settings:
-                patch_payload = {
-                    "chunk_size": cfg_chunk_size,
-                    "chunk_overlap": cfg_chunk_overlap,
-                    "top_k": cfg_top_k,
-                    "similarity_threshold": cfg_similarity,
-                    "chat_history_limit": cfg_history_limit,
-                    "system_prompt": cfg_system_prompt.strip()
-                    if cfg_system_prompt.strip()
-                    else None,
-                }
-                try:
-                    patch_res = requests.patch(
-                        f"{API_URL}/workspaces/{active_workspace['id']}", json=patch_payload
-                    )
-                    if patch_res.status_code == 200:
-                        st.success("Workspace settings updated successfully!")
-                        st.rerun()
-                    else:
-                        st.error(f"Failed to update settings: {get_error_msg(patch_res)}")
-                except requests.exceptions.ConnectionError:
-                    st.error("Backend is unreachable.")
-
     st.markdown("---")
 
-    col_model, col_temp = st.columns([6, 4])
+    col_model, col_temp, _ = st.columns([2, 2, 6])
     with col_model:
         st.session_state.selected_gen_model = st.selectbox(
             "⚙️ Generation LLM:",
             options=generation_options,
             index=default_gen_idx,
-            help="The language model that processes context and writes replies.",
+            help="The language model that synthesizes retrieved vector chunks and writes the response.",
             disabled=st.session_state.is_processing,
             key="search_llm_select",
         )
@@ -572,7 +619,7 @@ else:
             "Override Temperature",
             value=False,
             key="toggle_temp_search",
-            help="Leave off to use the model's native default settings.",
+            help="Leave off to use the model's native Modelfile calibration. Turn on to force custom sampling randomness.",
         )
         if override_temp_search:
             search_temp_val = st.slider(
@@ -582,6 +629,7 @@ else:
                 value=0.2,
                 step=0.05,
                 key="slider_temp_search",
+                help="Higher values increase randomness and creativity; lower values make responses more deterministic and analytical.",
             )
         else:
             search_temp_val = None
@@ -677,7 +725,7 @@ else:
                                 del_res = requests.delete(f"{API_URL}/threads/{t['id']}")
                                 if del_res.status_code == 200:
                                     st.session_state.pop(f"chk_del_{t['id']}", None)
-                                    st.success("Thread deleted.")
+                                    st.session_state.flash_msg = ("success", "Thread deleted.")
                                     st.rerun()
                                 else:
                                     st.error(f"Deletion failed: {get_error_msg(del_res)}")

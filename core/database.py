@@ -149,7 +149,12 @@ def update_workspace_settings(workspace_id: str, settings: dict) -> Optional[dic
         "chat_history_limit",
         "system_prompt",
     }
-    filtered_settings = {k: v for k, v in settings.items() if k in allowed_keys and v is not None}
+
+    filtered_settings = {}
+    for k, v in settings.items():
+        if k in allowed_keys:
+            if v is not None or k == "system_prompt":
+                filtered_settings[k] = v
 
     if not filtered_settings:
         return get_workspace(workspace_id)
