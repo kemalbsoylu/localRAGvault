@@ -6,10 +6,12 @@ from typing import List, Optional
 import ollama
 
 from core.config import (
+    ALLOW_CLOUD_MODELS,
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_GENERATION_MODEL,
+    DEFAULT_TOP_K,
     UPLOAD_DIR,
 )
 from core.logging_config import logger
@@ -82,8 +84,9 @@ def generate_answer(
     context_chunks: List[dict],
     model_name: str = DEFAULT_GENERATION_MODEL,
     chat_history: Optional[List[dict]] = None,
+    top_k: int = DEFAULT_TOP_K,
 ) -> LLMInternalResponse:
-    """Sends retrieved context, enriched chat history, and user query to the local LLM using optimized attention placement."""
+    """Sends retrieved context, enriched chat history, and user query to the local LLM."""
     target_model = normalize_model_name(model_name)
     fallback_msg = "I cannot answer this based on the provided documents."
 
@@ -106,11 +109,11 @@ def generate_answer(
             role_label = "User" if msg["role"] == "user" else "Assistant"
             turn_text = f"{role_label}: {msg['content']}"
 
-            # Inject historical sources for assistant turns so the LLM remembers its citations
+            # Dynamically slice historical citations to match active retrieval depth (top_k)
             if msg["role"] == "assistant" and msg.get("sources"):
                 source_labels = [
                     f"{s['filename']} (Chunk #{s.get('chunk_index', '?')})"
-                    for s in msg["sources"][:3]
+                    for s in msg["sources"][:top_k]
                 ]
                 if source_labels:
                     turn_text += f"\n  [Cited Documents: {', '.join(source_labels)}]"
@@ -121,7 +124,7 @@ def generate_answer(
             history_str = "\n".join(formatted_turns)
             history_block = f"\n### Previous Conversation History:\n{history_str}\n"
 
-    # 3. Assemble prompt: Rules -> Memory -> Active Context -> Question (Optimal Causal Order)
+    # 3. Assemble prompt: Rules -> Memory -> Active Context -> Question
     prompt = f"""You are a knowledgeable, analytical assistant for a private document vault.
 Your task is to answer the user's question by synthesizing and explaining information from the provided document chunks and conversation history.
 
@@ -189,10 +192,18 @@ Your task is to answer the user's question by synthesizing and explaining inform
 
 
 def get_available_models() -> List[str]:
-    """Fetches a list of installed models directly from local Ollama."""
+    """
+    Fetches a list of installed models directly from local Ollama.
+    Enforces local-only privacy rules if ALLOW_CLOUD_MODELS is disabled.
+    """
     try:
         response = ollama.list()
-        return [normalize_model_name(m.model) for m in response.models if m.model is not None]
+        models = [normalize_model_name(m.model) for m in response.models if m.model is not None]
+
+        if not ALLOW_CLOUD_MODELS:
+            models = [m for m in models if "cloud" not in m.lower()]
+
+        return models
     except Exception as e:
         logger.error(f"Failed to fetch model catalog from local Ollama service: {e}")
         raise

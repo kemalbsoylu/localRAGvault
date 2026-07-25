@@ -5,7 +5,7 @@ from typing import AsyncGenerator, List
 import psycopg
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 
-from core.config import DEFAULT_EMBEDDING_MODEL
+from core.config import DEFAULT_CHAT_HISTORY_LIMIT, DEFAULT_EMBEDDING_MODEL
 from core.database import (
     add_message,
     create_thread,
@@ -631,7 +631,7 @@ def ask_question(search: SearchQuery) -> RAGQueryResponse:
             if not get_thread(thread_id):
                 logger.warning(f"Ask aborted: Thread '{thread_id}' not found.")
                 raise HTTPException(status_code=404, detail=f"Thread '{thread_id}' not found.")
-            chat_history = get_thread_messages(thread_id, limit=6)
+            chat_history = get_thread_messages(thread_id, limit=DEFAULT_CHAT_HISTORY_LIMIT)
             logger.info(f"Loaded {len(chat_history)} historical messages for thread {thread_id}.")
         else:
             thread_id = str(uuid.uuid4())
@@ -692,6 +692,7 @@ def ask_question(search: SearchQuery) -> RAGQueryResponse:
             context_chunks=raw_results,
             model_name=search.generation_model,
             chat_history=chat_history,
+            top_k=search.top_k,
         )
 
         if not llm_response.is_valid:

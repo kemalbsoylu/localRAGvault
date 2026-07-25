@@ -408,7 +408,10 @@ def test_upload_batch_mixed_validity_and_unnamed_streams() -> None:
     files_mixed = [
         ("files", ("valid_doc.txt", b"Valid text stream.", "text/plain")),
         ("files", ("malicious.exe", b"binary executable payload", "application/octet-stream")),
-        ("files", ("   ", b"unnamed stream bytes", "text/plain")),  # Whitespace name passes HTTP protocol but fails our .strip() safeguard!
+        (
+            "files",
+            ("   ", b"unnamed stream bytes", "text/plain"),
+        ),
     ]
     res = client.post(
         "/upload/batch/",
@@ -424,6 +427,7 @@ def test_upload_batch_mixed_validity_and_unnamed_streams() -> None:
     failed_reasons = [r["error_message"] for r in data["results"] if r["status"] == "failed"]
     assert any("Unsupported file type" in msg for msg in failed_reasons if msg)
     assert any("Missing or empty filename" in msg for msg in failed_reasons if msg)
+
 
 # =====================================================================
 # --- 8. CONVERSATION HISTORY & THREAD LISTING TESTS ---
