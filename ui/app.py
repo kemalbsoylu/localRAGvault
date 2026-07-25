@@ -37,6 +37,8 @@ if "ws_name_input_key" not in st.session_state:
     st.session_state.ws_name_input_key = 0
 if "search_input_key" not in st.session_state:
     st.session_state.search_input_key = 0
+if "ws_created" not in st.session_state:
+    st.session_state.ws_created = False
 
 
 def get_error_msg(response: requests.Response) -> str:
@@ -90,7 +92,13 @@ if st.session_state.flash_msg:
         else:
             st.info(msg_text, icon="ℹ️")
     with col_close:
-        if st.button("✕", key="btn_dismiss_flash", type="tertiary", help="Dismiss notification"):
+        if st.button(
+            "✕",
+            key="btn_dismiss_flash",
+            type="tertiary",
+            disabled=st.session_state.is_processing,
+            help="Dismiss notification",
+        ):
             st.session_state.flash_msg = None
             st.rerun()
 
@@ -124,7 +132,8 @@ with st.sidebar:
     else:
         st.warning("No workspaces found. Create one below to begin.")
 
-    with st.expander("➕ Create New Workspace", expanded=not workspaces):
+    show_create_panel = not workspaces and not st.session_state.ws_created
+    with st.expander("➕ Create New Workspace", expanded=show_create_panel):
         with st.form("create_workspace_form"):
             new_ws_name = st.text_input(
                 "Workspace Name",
@@ -166,7 +175,13 @@ with st.sidebar:
                 with col_title:
                     st.subheader("📊 Ingestion Report")
                 with col_close:
-                    if st.button("✕", key="btn_dismiss_rep", type="tertiary", help="Close report"):
+                    if st.button(
+                        "✕",
+                        key="btn_dismiss_rep",
+                        type="tertiary",
+                        disabled=st.session_state.is_processing,
+                        help="Close report",
+                    ):
                         st.session_state.batch_report = None
                         st.rerun()
 
@@ -203,7 +218,7 @@ with st.sidebar:
                 accept_multiple_files=True,
                 disabled=st.session_state.is_processing,
                 key=f"file_uploader_{st.session_state.file_uploader_key}",
-                help="Select multiple files or drag a folder. Identical file names replace existing versions cleanly without duplicating vector embeddings.",
+                help="Select multiple files or drag a folder. Identical file names replace existing versions cleanly without duplicating vector embeddings. Customize chunking physics in the Workspace Settings below before uploading.",
             )
             submit_upload = st.form_submit_button(
                 "Ingest Documents", disabled=st.session_state.is_processing
@@ -248,6 +263,7 @@ with st.sidebar:
                             confirm_del_file = st.checkbox(
                                 "Confirm deletion",
                                 key=f"chk_{active_workspace['id']}_{doc['filename']}",
+                                disabled=st.session_state.is_processing,
                             )
                             if st.button(
                                 "🗑️ Delete File",
@@ -277,121 +293,124 @@ with st.sidebar:
         # --- PER-WORKSPACE RAG SETTINGS ---
         st.markdown("---")
         with st.expander("⚙️ Workspace Settings", expanded=False):
-            st.caption(
-                "Customize chunking physics, vector search bounds, and memory context for this workspace."
+            st.subheader("Chunking & Extraction")
+            st.caption("Chunking physics apply strictly to subsequent file ingestions.")
+            cfg_chunk_size = st.slider(
+                "Chunk Size (characters)",
+                min_value=100,
+                max_value=2000,
+                value=active_workspace["chunk_size"],
+                step=50,
+                disabled=st.session_state.is_processing,
+                help="Determines the character length of each individual text block when splitting ingested documents. Larger chunks capture broader context; smaller chunks isolate specific facts.",
             )
-            with st.form(key=f"ws_settings_form_{active_workspace['id']}"):
-                st.subheader("Chunking & Extraction")
-                st.caption("Chunking physics apply strictly to subsequent file ingestions.")
-                cfg_chunk_size = st.slider(
-                    "Chunk Size (characters)",
-                    min_value=100,
-                    max_value=2000,
-                    value=active_workspace["chunk_size"],
-                    step=50,
-                    help="Determines the character length of each individual text block when splitting ingested documents. Larger chunks capture broader context; smaller chunks isolate specific facts.",
-                )
 
-                max_allowed_overlap = min(500, int(cfg_chunk_size * 0.5))
-                current_overlap = min(active_workspace["chunk_overlap"], max_allowed_overlap)
+            max_allowed_overlap = min(500, int(cfg_chunk_size * 0.5))
+            current_overlap = min(active_workspace["chunk_overlap"], max_allowed_overlap)
 
-                cfg_chunk_overlap = st.slider(
-                    "Chunk Overlap (characters)",
-                    min_value=0,
-                    max_value=max_allowed_overlap,
-                    value=current_overlap,
-                    step=10,
-                    help="The number of overlapping characters between adjacent chunks. This acts as a semantic bridge so context is not split awkwardly at chunk boundaries.",
-                )
+            cfg_chunk_overlap = st.slider(
+                "Chunk Overlap (characters)",
+                min_value=0,
+                max_value=max_allowed_overlap,
+                value=current_overlap,
+                step=10,
+                disabled=st.session_state.is_processing,
+                help="The number of overlapping characters between adjacent chunks. This acts as a semantic bridge so context is not split awkwardly at chunk boundaries.",
+            )
 
-                st.markdown("---")
-                st.subheader("Vector Search & Memory")
+            st.markdown("---")
+            st.subheader("Vector Search & Memory")
 
-                cfg_top_k = st.slider(
-                    "Top-K Retrieval Depth",
-                    min_value=1,
-                    max_value=20,
-                    value=active_workspace["top_k"],
-                    step=1,
-                    help="The maximum number of relevant document chunks retrieved from vector search and injected into the LLM's prompt context. Too high (≥10) risks 'lost-in-the-middle' attention dilution; too low misses context. (Default=5)",
-                )
+            cfg_top_k = st.slider(
+                "Top-K Retrieval Depth",
+                min_value=1,
+                max_value=20,
+                value=active_workspace["top_k"],
+                step=1,
+                disabled=st.session_state.is_processing,
+                help="The maximum number of relevant document chunks retrieved from vector search and injected into the LLM's prompt context. Too high (≥10) risks 'lost-in-the-middle' attention dilution; too low misses context. (Default=5)",
+            )
 
-                cfg_similarity = st.slider(
-                    "Similarity Threshold",
-                    min_value=0.0,
-                    max_value=0.8,
-                    value=float(active_workspace["similarity_threshold"]),
-                    step=0.05,
-                    help="The minimum cosine similarity score (0.0 to 1.0) required for a chunk to be considered relevant. Higher values enforce stricter filtering against off-topic chunks. (Default=0.15)",
-                )
+            cfg_similarity = st.slider(
+                "Similarity Threshold",
+                min_value=0.0,
+                max_value=0.8,
+                value=float(active_workspace["similarity_threshold"]),
+                step=0.05,
+                disabled=st.session_state.is_processing,
+                help="The minimum cosine similarity score (0.0 to 1.0) required for a chunk to be considered relevant. Higher values enforce stricter filtering against off-topic chunks. (Default=0.15)",
+            )
 
-                cfg_history_limit = st.slider(
-                    "Conversation Memory Depth (turns)",
-                    min_value=1,
-                    max_value=20,
-                    value=active_workspace["chat_history_limit"],
-                    step=1,
-                    help="The number of recent conversational turns (user queries and assistant replies) included in the memory payload to maintain multi-turn context. (Default=6)",
-                )
+            cfg_history_limit = st.slider(
+                "Conversation Memory Depth (turns)",
+                min_value=1,
+                max_value=20,
+                value=active_workspace["chat_history_limit"],
+                step=1,
+                disabled=st.session_state.is_processing,
+                help="The number of recent conversational turns (user queries and assistant replies) included in the memory payload to maintain multi-turn context. (Default=6)",
+            )
 
-                st.markdown("---")
+            st.markdown("---")
 
-                cfg_system_prompt = st.text_area(
-                    "System Instructions / Persona",
-                    value=active_workspace["system_prompt"] or "",
-                    placeholder="e.g., Respond using concise technical bullet points.",
-                    height=100,
-                    help="Custom behavioral persona or strict operational instructions injected at the top of the LLM prompt hierarchy.",
-                )
+            cfg_system_prompt = st.text_area(
+                "System Instructions / Persona",
+                value=active_workspace["system_prompt"] or "",
+                placeholder="e.g., Respond using concise technical bullet points.",
+                height=100,
+                disabled=st.session_state.is_processing,
+                help="Custom behavioral persona or strict operational instructions injected at the top of the LLM prompt hierarchy.",
+            )
 
-                btn_save_settings = st.form_submit_button(
-                    "💾 Save Settings", use_container_width=True
-                )
+            btn_save_settings = st.button(
+                "💾 Save Settings",
+                use_container_width=True,
+                disabled=st.session_state.is_processing,
+            )
 
-                if btn_save_settings:
-                    new_prompt_val = (
-                        cfg_system_prompt.strip() if cfg_system_prompt.strip() else None
-                    )
-                    if (
-                        cfg_chunk_size == active_workspace["chunk_size"]
-                        and cfg_chunk_overlap == active_workspace["chunk_overlap"]
-                        and cfg_top_k == active_workspace["top_k"]
-                        and round(cfg_similarity, 4)
-                        == round(float(active_workspace["similarity_threshold"]), 4)
-                        and cfg_history_limit == active_workspace["chat_history_limit"]
-                        and new_prompt_val == active_workspace["system_prompt"]
-                    ):
-                        st.info("ℹ️ No changes detected. Settings were not modified.")
-                    else:
-                        patch_payload = {
-                            "chunk_size": cfg_chunk_size,
-                            "chunk_overlap": cfg_chunk_overlap,
-                            "top_k": cfg_top_k,
-                            "similarity_threshold": cfg_similarity,
-                            "chat_history_limit": cfg_history_limit,
-                            "system_prompt": new_prompt_val,
-                        }
-                        try:
-                            patch_res = requests.patch(
-                                f"{API_URL}/workspaces/{active_workspace['id']}", json=patch_payload
+            if btn_save_settings:
+                new_prompt_val = cfg_system_prompt.strip() if cfg_system_prompt.strip() else None
+                if (
+                    cfg_chunk_size == active_workspace["chunk_size"]
+                    and cfg_chunk_overlap == active_workspace["chunk_overlap"]
+                    and cfg_top_k == active_workspace["top_k"]
+                    and round(cfg_similarity, 4)
+                    == round(float(active_workspace["similarity_threshold"]), 4)
+                    and cfg_history_limit == active_workspace["chat_history_limit"]
+                    and new_prompt_val == active_workspace["system_prompt"]
+                ):
+                    st.info("ℹ️ No changes detected. Settings were not modified.")
+                else:
+                    patch_payload = {
+                        "chunk_size": cfg_chunk_size,
+                        "chunk_overlap": cfg_chunk_overlap,
+                        "top_k": cfg_top_k,
+                        "similarity_threshold": cfg_similarity,
+                        "chat_history_limit": cfg_history_limit,
+                        "system_prompt": new_prompt_val,
+                    }
+                    try:
+                        patch_res = requests.patch(
+                            f"{API_URL}/workspaces/{active_workspace['id']}", json=patch_payload
+                        )
+                        if patch_res.status_code == 200:
+                            st.session_state.flash_msg = (
+                                "success",
+                                "Workspace settings updated successfully!",
                             )
-                            if patch_res.status_code == 200:
-                                st.session_state.flash_msg = (
-                                    "success",
-                                    "Workspace settings updated successfully!",
-                                )
-                                st.rerun()
-                            else:
-                                st.error(f"Failed to update settings: {get_error_msg(patch_res)}")
-                        except requests.exceptions.ConnectionError:
-                            st.error("Backend is unreachable.")
+                            st.rerun()
+                        else:
+                            st.error(f"Failed to update settings: {get_error_msg(patch_res)}")
+                    except requests.exceptions.ConnectionError:
+                        st.error("Backend is unreachable.")
 
         # Workspace Deletion UI
-        with st.expander("⚠️ Danger Zone: Delete Workspace"):
+        with st.expander(f"⚠️ Danger Zone: Delete '{active_workspace['name']}'", expanded=False):
             st.warning("Permanently deletes workspace, history, and physical files.")
             confirm_del_ws = st.checkbox(
                 "Confirm destruction",
                 key=f"chk_del_ws_{active_workspace['id']}",
+                disabled=st.session_state.is_processing,
             )
             if st.button(
                 "🚨 Delete Workspace Permanently",
@@ -432,6 +451,7 @@ if st.session_state.pending_workspace:
             )
             if res.status_code == 200:
                 st.session_state.ws_name_input_key += 1
+                st.session_state.ws_created = True
                 st.session_state.flash_msg = (
                     "success",
                     f"Workspace '{res.json()['name']}' created with `{res.json()['embedding_model']}` and {res.json()['dimension']} dimensions!",
@@ -565,6 +585,7 @@ elif st.session_state.active_thread_id:
             "Override Temperature",
             value=False,
             key="toggle_temp_chat",
+            disabled=st.session_state.is_processing,
             help="Leave off to use the model's native Modelfile calibration. Turn on to force custom sampling randomness.",
         )
         if override_temp_chat:
@@ -575,6 +596,7 @@ elif st.session_state.active_thread_id:
                 value=0.2,
                 step=0.05,
                 key="slider_temp_chat",
+                disabled=st.session_state.is_processing,
                 help="Higher values increase randomness and creativity; lower values make responses more deterministic and analytical.",
             )
         else:
@@ -645,6 +667,7 @@ else:
             "Override Temperature",
             value=False,
             key="toggle_temp_search",
+            disabled=st.session_state.is_processing,
             help="Leave off to use the model's native Modelfile calibration. Turn on to force custom sampling randomness.",
         )
         if override_temp_search:
@@ -655,6 +678,7 @@ else:
                 value=0.2,
                 step=0.05,
                 key="slider_temp_search",
+                disabled=st.session_state.is_processing,
                 help="Higher values increase randomness and creativity; lower values make responses more deterministic and analytical.",
             )
         else:
@@ -671,11 +695,14 @@ else:
             label="Search & Generate", disabled=st.session_state.is_processing
         )
 
-    if submit_button and query:
-        st.session_state.is_processing = True
-        st.session_state.current_query = query
-        st.session_state.search_input_key += 1
-        st.rerun()
+    if submit_button:
+        if not query.strip():
+            st.warning("⚠️ Please enter a question or topic before searching.")
+        else:
+            st.session_state.is_processing = True
+            st.session_state.current_query = query
+            st.session_state.search_input_key += 1
+            st.rerun()
 
     if st.session_state.is_processing and st.session_state.current_query:
         with st.spinner("Searching the vault and generating an answer..."):
@@ -741,6 +768,7 @@ else:
                     confirm_del = st.checkbox(
                         "Confirm thread deletion",
                         key=f"chk_del_{t['id']}",
+                        disabled=st.session_state.is_processing,
                     )
                     if st.button(
                         "🚨 Permanently Delete Thread",
