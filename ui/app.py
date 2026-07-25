@@ -79,6 +79,35 @@ def fetch_workspace_threads(workspace_id: str):
     return []
 
 
+def render_sources_section(
+    sources: list, key_prefix: str, expander_title: str = "📚 Cited Sources"
+):
+    if not sources:
+        return
+
+    with st.expander(expander_title):
+        for idx, s in enumerate(sources, start=1):
+            col_file, _, col_sim, col_btn = st.columns([5, 1, 2, 2])
+
+            with col_file:
+                st.markdown(
+                    f"**[{idx}]** 📄 **{s['filename']}** (Chunk #{s.get('chunk_index', 1)})"
+                )
+            with col_sim:
+                st.markdown(f"Similarity: `{s.get('similarity', 0.0):.4f}`")
+            with col_btn:
+                snippet = s.get("content")
+                if snippet and snippet.strip():
+                    with st.popover(
+                        "ℹ️ View",
+                        use_container_width=True,
+                        key=f"popover_{key_prefix}_{idx}",
+                    ):
+                        st.text(snippet.strip())
+                else:
+                    st.caption("*(No text)*")
+
+
 # --- Render Sleek Dismissible Flash Feedback Banner ---
 if st.session_state.flash_msg:
     msg_type, msg_text = st.session_state.flash_msg
@@ -558,11 +587,11 @@ elif st.session_state.active_thread_id:
                         st.caption(f"🕒 `{msg_time}`")
 
                     if msg.get("sources"):
-                        with st.expander("📚 Sources Cited"):
-                            for s in msg["sources"]:
-                                st.markdown(
-                                    f"- 📄 **{s['filename']}** (Chunk #{s.get('chunk_index', 1)}, Similarity: {s['similarity']})"
-                                )
+                        render_sources_section(
+                            sources=msg["sources"],
+                            key_prefix=f"chat_msg_{msg['id']}",
+                            expander_title="📚 Sources Cited",
+                        )
         else:
             st.error(f"Failed to load chat history: {get_error_msg(res)}")
     except requests.exceptions.ConnectionError:
@@ -757,11 +786,11 @@ else:
                         st.rerun()
 
                 if t.get("sources"):
-                    with st.expander("📚 View Sources Cited in Latest Reply"):
-                        for source in t["sources"]:
-                            st.markdown(
-                                f"- 📄 **{source['filename']}** (Chunk #{source.get('chunk_index', 1)}, Similarity: {source['similarity']})"
-                            )
+                    render_sources_section(
+                        sources=t["sources"],
+                        key_prefix=f"thread_card_{t['id']}",
+                        expander_title="📚 View Sources Cited in Latest Reply",
+                    )
 
                 with st.expander("🗑️ Delete Thread"):
                     st.warning("Deletes this conversation thread permanently.")

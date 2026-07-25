@@ -111,6 +111,9 @@ class DocumentSource(BaseModel):
     filename: str
     chunk_index: int
     similarity: float
+    content: Optional[str] = Field(
+        default=None, description="The text excerpt preview of the retrieved document chunk."
+    )
 
 
 class SearchResultCard(BaseModel):

@@ -750,6 +750,7 @@ def ask_question(search: SearchQuery) -> RAGQueryResponse:
                 filename=row["filename"],
                 chunk_index=row["chunk_index"],
                 similarity=round(row["similarity"], 4),
+                content=row.get("content"),
             )
             for row in raw_results
         ]
@@ -787,6 +788,10 @@ def ask_question(search: SearchQuery) -> RAGQueryResponse:
         if not llm_response.is_valid:
             logger.info("LLM returned context failure warning. Hiding document references.")
             sources = []
+
+        logger.info(
+            f"RAG generation successful for thread '{thread_id}'. Attached {len(sources)} cited sources."
+        )
 
         add_message(thread_id, "user", search.query, search.generation_model)
         add_message(
