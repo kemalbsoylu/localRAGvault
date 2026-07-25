@@ -203,7 +203,7 @@ with st.sidebar:
                 accept_multiple_files=True,
                 disabled=st.session_state.is_processing,
                 key=f"file_uploader_{st.session_state.file_uploader_key}",
-                help="Select multiple files or folders. Identical file names replace existing versions cleanly without duplicating vector embeddings.",
+                help="Select multiple files or drag a folder. Identical file names replace existing versions cleanly without duplicating vector embeddings.",
             )
             submit_upload = st.form_submit_button(
                 "Ingest Documents", disabled=st.session_state.is_processing
@@ -277,10 +277,14 @@ with st.sidebar:
         # --- PER-WORKSPACE RAG SETTINGS ---
         st.markdown("---")
         with st.expander("⚙️ Workspace Settings", expanded=False):
-            st.caption("Note: Chunking physics apply strictly to subsequent file ingestions.")
+            st.caption(
+                "Customize chunking physics, vector search bounds, and memory context for this workspace."
+            )
             with st.form(key=f"ws_settings_form_{active_workspace['id']}"):
+                st.subheader("Chunking & Extraction")
+                st.caption("Chunking physics apply strictly to subsequent file ingestions.")
                 cfg_chunk_size = st.slider(
-                    "Chunk Size (chars)",
+                    "Chunk Size (characters)",
                     min_value=100,
                     max_value=2000,
                     value=active_workspace["chunk_size"],
@@ -292,7 +296,7 @@ with st.sidebar:
                 current_overlap = min(active_workspace["chunk_overlap"], max_allowed_overlap)
 
                 cfg_chunk_overlap = st.slider(
-                    "Chunk Overlap (chars)",
+                    "Chunk Overlap (characters)",
                     min_value=0,
                     max_value=max_allowed_overlap,
                     value=current_overlap,
@@ -300,13 +304,16 @@ with st.sidebar:
                     help="The number of overlapping characters between adjacent chunks. This acts as a semantic bridge so context is not split awkwardly at chunk boundaries.",
                 )
 
+                st.markdown("---")
+                st.subheader("Vector Search & Memory")
+
                 cfg_top_k = st.slider(
                     "Top-K Retrieval Depth",
                     min_value=1,
                     max_value=20,
                     value=active_workspace["top_k"],
                     step=1,
-                    help="The maximum number of relevant document chunks retrieved from PostgreSQL vector search and injected into the LLM's prompt context.",
+                    help="The maximum number of relevant document chunks retrieved from vector search and injected into the LLM's prompt context. Too high (≥10) risks 'lost-in-the-middle' attention dilution; too low misses context. (Default=5)",
                 )
 
                 cfg_similarity = st.slider(
@@ -315,17 +322,19 @@ with st.sidebar:
                     max_value=0.8,
                     value=float(active_workspace["similarity_threshold"]),
                     step=0.05,
-                    help="The minimum cosine similarity score (0.0 to 1.0) required for a chunk to be considered relevant. Higher values enforce stricter filtering against off-topic chunks.",
+                    help="The minimum cosine similarity score (0.0 to 1.0) required for a chunk to be considered relevant. Higher values enforce stricter filtering against off-topic chunks. (Default=0.15)",
                 )
 
                 cfg_history_limit = st.slider(
-                    "Memory Depth (turns)",
+                    "Conversation Memory Depth (turns)",
                     min_value=1,
                     max_value=20,
                     value=active_workspace["chat_history_limit"],
                     step=1,
-                    help="The number of recent conversational turns (user queries and assistant replies) included in the memory payload to maintain multi-turn context.",
+                    help="The number of recent conversational turns (user queries and assistant replies) included in the memory payload to maintain multi-turn context. (Default=6)",
                 )
+
+                st.markdown("---")
 
                 cfg_system_prompt = st.text_area(
                     "System Instructions / Persona",
@@ -340,12 +349,15 @@ with st.sidebar:
                 )
 
                 if btn_save_settings:
-                    new_prompt_val = cfg_system_prompt.strip() if cfg_system_prompt.strip() else None
+                    new_prompt_val = (
+                        cfg_system_prompt.strip() if cfg_system_prompt.strip() else None
+                    )
                     if (
                         cfg_chunk_size == active_workspace["chunk_size"]
                         and cfg_chunk_overlap == active_workspace["chunk_overlap"]
                         and cfg_top_k == active_workspace["top_k"]
-                        and round(cfg_similarity, 4) == round(float(active_workspace["similarity_threshold"]), 4)
+                        and round(cfg_similarity, 4)
+                        == round(float(active_workspace["similarity_threshold"]), 4)
                         and cfg_history_limit == active_workspace["chat_history_limit"]
                         and new_prompt_val == active_workspace["system_prompt"]
                     ):
@@ -422,7 +434,7 @@ if st.session_state.pending_workspace:
                 st.session_state.ws_name_input_key += 1
                 st.session_state.flash_msg = (
                     "success",
-                    f"Workspace is created with {res.json()['dimension']} dimensions!",
+                    f"Workspace '{res.json()['name']}' created with `{res.json()['embedding_model']}` and {res.json()['dimension']} dimensions!",
                 )
             else:
                 st.session_state.flash_msg = ("error", f"Error: {get_error_msg(res)}")
