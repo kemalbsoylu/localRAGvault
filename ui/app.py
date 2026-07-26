@@ -923,7 +923,11 @@ else:
             }
             try:
                 res = requests.post(f"{API_URL}/ask/", json=payload)
-                if res.status_code != 200:
+                if res.status_code == 200:
+                    response_data = res.json()
+                    if "thread_id" in response_data:
+                        st.session_state.active_thread_id = response_data["thread_id"]
+                else:
                     st.error(f"Error generating answer: {get_error_msg(res)}")
             except requests.exceptions.ConnectionError:
                 st.error("Backend is unreachable. Is FastAPI running?")
