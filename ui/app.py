@@ -373,6 +373,8 @@ with st.sidebar:
                         ):
                             st.session_state.inventory_limit += DEFAULT_PAGE_LIMIT
                             st.rerun()
+                    else:
+                        st.caption("*All files loaded*")
 
                     if st.session_state.inventory_limit > DEFAULT_PAGE_LIMIT:
                         if st.button(
@@ -674,34 +676,31 @@ elif st.session_state.active_thread_id:
             total_msgs = history_payload.get("total_count", 0)
             has_older = history_payload.get("has_more", False)
 
-            # "Load Older Messages" Button at top of Chat
+            # "Load Older Messages" & "Show Recent Only" Controls at top of Chat
             initial_msg_limit = DEFAULT_PAGE_LIMIT * 2
             if has_older or total_msgs > len(history_data):
-                col_older, col_reset = (
-                    st.columns([7, 3])
-                    if st.session_state.messages_limit > initial_msg_limit
-                    else st.columns([1, 0.01])
-                )
-                with col_older:
-                    if st.button(
-                        f"⬆️ Load Older Messages ({total_msgs - len(history_data)} earlier messages)",
-                        key="btn_load_older_msgs",
-                        use_container_width=True,
-                        disabled=st.session_state.is_processing,
-                    ):
-                        st.session_state.messages_limit += DEFAULT_PAGE_LIMIT * 2
-                        st.rerun()
-                if st.session_state.messages_limit > initial_msg_limit:
-                    with col_reset:
-                        if st.button(
-                            "⬇️ Show Recent Only",
-                            key="btn_reset_msgs",
-                            use_container_width=True,
-                            disabled=st.session_state.is_processing,
-                        ):
-                            st.session_state.messages_limit = initial_msg_limit
-                            st.rerun()
-                st.markdown("---")
+                if st.button(
+                    f"⬆️ Load Older Messages ({total_msgs - len(history_data)} earlier messages)",
+                    key="btn_load_older_msgs",
+                    use_container_width=True,
+                    disabled=st.session_state.is_processing,
+                ):
+                    st.session_state.messages_limit += DEFAULT_PAGE_LIMIT * 2
+                    st.rerun()
+            else:
+                st.caption("*All messages loaded*")
+
+            if st.session_state.messages_limit > initial_msg_limit:
+                if st.button(
+                    "⬇️ Show Recent Only",
+                    key="btn_reset_msgs",
+                    use_container_width=True,
+                    disabled=st.session_state.is_processing,
+                ):
+                    st.session_state.messages_limit = initial_msg_limit
+                    st.rerun()
+
+            st.markdown("---")
 
             for msg in history_data:
                 icon = "👤" if msg["role"] == "user" else "🤖"
@@ -966,6 +965,8 @@ else:
             ):
                 st.session_state.threads_limit += DEFAULT_PAGE_LIMIT
                 st.rerun()
+        else:
+            st.caption("*All threads loaded*")
 
         if st.session_state.threads_limit > DEFAULT_PAGE_LIMIT:
             if st.button(
