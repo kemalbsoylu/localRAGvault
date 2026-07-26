@@ -102,7 +102,7 @@ def generate_answer(
     formatted_context_blocks = []
     for idx, item in enumerate(context_chunks, start=1):
         block = (
-            f"[Source *{idx}: {item['filename']} | Chunk #{item.get('chunk_index', '?')}]\n"
+            f"[<source id='{idx}'> {item['filename']} | Chunk #{item.get('chunk_index', '?')}]\n"
             f"{item['content']}"
         )
         formatted_context_blocks.append(block)
@@ -122,7 +122,7 @@ def generate_answer(
                     for s_idx, s in enumerate(msg["sources"][:top_k], start=1)
                 ]
                 if source_labels:
-                    turn_text += f"\n  [Historical Retrieved Documents: {', '.join(source_labels)}]"
+                    turn_text += f"\n  [Relevant Document Chunks for previous turn: {', '.join(source_labels)}]"
 
             formatted_turns.append(turn_text)
 
@@ -141,9 +141,9 @@ Your task is to answer the user's question by synthesizing and explaining inform
 {custom_instructions}
 ### Strict Operating Rules:
 1. Ground your reasoning strictly in the provided context chunks and conversation history. Do NOT use outside knowledge or assume facts not directly supported by the text.
-2. When referencing facts from the context, insert concise numerical tags in the flowing text corresponding to the source number, such as [*1] or [*2]. NEVER write out full filenames, document paths, or chunk numbers in the body text! You can list references at the end of your messages with filenames and details if they are used in your answer.
+2. When referencing facts from the context, insert concise numerical tags in the flowing text corresponding to the source number.
 3. Synthesize and explain concepts in clear, natural language—do not copy-paste raw sentences verbatim unless quoting specific data or technical terms.
-4. If the user asks a follow-up question about previous answers, answer directly using the Previous Conversation History and its short [Historical Retrieved Documents] tags.
+4. If the user asks a follow-up question about previous answers, answer directly using the Previous Conversation History and its [Relevant Document Chunks for previous turn] info for each answer.
 5. If the context contains relevant information that only partially answers the question, explain what the documents reveal and note what details are missing.
 6. If the provided context and conversation history are completely irrelevant or contain no information to answer the question, respond EXACTLY with this string: "{fallback_msg}"
 {history_block}

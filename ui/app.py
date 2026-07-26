@@ -80,7 +80,7 @@ def fetch_workspace_threads(workspace_id: str):
 
 
 def render_sources_section(
-    sources: list, key_prefix: str, expander_title: str = "📚 Cited Sources"
+    sources: list, key_prefix: str, expander_title: str = "📚 Relevant Document Chunks"
 ):
     if not sources:
         return
@@ -590,7 +590,7 @@ elif st.session_state.active_thread_id:
                         render_sources_section(
                             sources=msg["sources"],
                             key_prefix=f"chat_msg_{msg['id']}",
-                            expander_title="📚 Sources Cited",
+                            expander_title="📚 Relevant Document Chunks",
                         )
         else:
             st.error(f"Failed to load chat history: {get_error_msg(res)}")
@@ -789,7 +789,7 @@ else:
                     render_sources_section(
                         sources=t["sources"],
                         key_prefix=f"thread_card_{t['id']}",
-                        expander_title="📚 View Sources Cited in Latest Reply",
+                        expander_title="📚 View Relevant Document Chunks in Latest Reply",
                     )
 
                 with st.expander("🗑️ Delete Thread"):

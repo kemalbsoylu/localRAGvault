@@ -790,7 +790,7 @@ def ask_question(search: SearchQuery) -> RAGQueryResponse:
             sources = []
 
         logger.info(
-            f"RAG generation successful for thread '{thread_id}'. Attached {len(sources)} cited sources."
+            f"RAG generation successful for thread '{thread_id}'. Attached {len(sources)} Relevant Document Chunks."
         )
 
         add_message(thread_id, "user", search.query, search.generation_model)
