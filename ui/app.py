@@ -460,6 +460,9 @@ with st.sidebar:
                                         f"{API_URL}/documents/{active_workspace['id']}/{doc['filename']}"
                                     )
                                     if del_res.status_code == 200:
+                                        st.session_state.pop(
+                                            f"chk_{active_workspace['id']}_{doc['filename']}", None
+                                        )
                                         st.session_state.flash_msg = (
                                             "success",
                                             f"Deleted '{doc['filename']}'.",
