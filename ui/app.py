@@ -21,6 +21,8 @@ st.title("🗄️ localRAGvault")
 st.markdown("Your privacy-first, fully local document assistant.")
 
 # --- Session State Initialization ---
+if "active_workspace_id" not in st.session_state:
+    st.session_state.active_workspace_id = None
 if "is_processing" not in st.session_state:
     st.session_state.is_processing = False
 if "current_query" not in st.session_state:
@@ -139,6 +141,18 @@ def render_sources_section(
                     st.caption("*(No text)*")
 
 
+def on_workspace_change():
+    """Sync session state and reset pagination when user manually selects a workspace."""
+    new_id = st.session_state.workspace_selector_widget
+    st.session_state.active_workspace_id = new_id
+    st.session_state.last_active_workspace_id = new_id
+    st.session_state.threads_limit = DEFAULT_PAGE_LIMIT
+    st.session_state.threads_offset = DEFAULT_PAGE_OFFSET
+    st.session_state.inventory_limit = DEFAULT_PAGE_LIMIT
+    st.session_state.inventory_offset = DEFAULT_PAGE_OFFSET
+    st.session_state.active_thread_id = None
+
+
 # --- Render Sleek Dismissible Flash Feedback Banner ---
 if st.session_state.flash_msg:
     msg_type, msg_text = st.session_state.flash_msg
@@ -163,8 +177,93 @@ if st.session_state.flash_msg:
             st.rerun()
 
 
+# --- BACKGROUND API EXECUTION ---
+
+if st.session_state.pending_workspace:
+    pw = st.session_state.pending_workspace
+    st.session_state.pending_workspace = None
+    with st.spinner(f"Probing model and initializing workspace '{pw['name']}'..."):
+        try:
+            res = requests.post(
+                f"{API_URL}/workspaces/",
+                json={"name": pw["name"], "embedding_model": pw["embedding_model"]},
+            )
+            if res.status_code == 200:
+                new_ws = res.json()
+                st.session_state.ws_name_input_key += 1
+                st.session_state.ws_created = True
+
+                # Lock both state variables to the newly created workspace
+                st.session_state.active_workspace_id = new_ws["id"]
+                st.session_state.workspace_selector_widget = new_ws["id"]
+                st.session_state.active_thread_id = None
+
+                st.session_state.flash_msg = (
+                    "success",
+                    f"Workspace '{new_ws['name']}' created with `{new_ws['embedding_model']}` and {new_ws['dimension']} dimensions!",
+                )
+            else:
+                st.session_state.flash_msg = ("error", f"Error: {get_error_msg(res)}")
+        except requests.exceptions.ConnectionError:
+            st.session_state.flash_msg = ("error", "Backend unreachable. Is FastAPI running?")
+    st.session_state.is_processing = False
+    st.rerun()
+
+if st.session_state.pending_batch_upload:
+    pu = st.session_state.pending_batch_upload
+    st.session_state.pending_batch_upload = None
+    with st.spinner(f"Batch ingesting {len(pu['files'])} file(s) and calculating embeddings..."):
+        files_payload = [
+            ("files", (name, content, "application/octet-stream")) for name, content in pu["files"]
+        ]
+        data_payload = {
+            "workspace_id": pu["workspace_id"],
+            "embedding_model": pu["embedding_model"],
+        }
+        try:
+            res = requests.post(f"{API_URL}/upload/batch/", files=files_payload, data=data_payload)
+            if res.status_code == 200:
+                report_data = res.json()
+                st.session_state.batch_report = report_data
+                st.session_state.file_uploader_key += 1
+
+                sum_data = report_data["summary"]
+                if sum_data["failed"] == 0:
+                    st.session_state.flash_msg = (
+                        "success",
+                        f"Batch ingestion complete! Processed {sum_data['successful']} new and {sum_data['upserts']} updated files ({sum_data['total_chunks_saved']} chunks saved).",
+                    )
+                else:
+                    st.session_state.flash_msg = (
+                        "error",
+                        f"Batch ingestion finished with errors: {sum_data['failed']} file(s) failed to ingest. Check report from the sidebar.",
+                    )
+            else:
+                st.session_state.flash_msg = ("error", f"Batch upload failed: {get_error_msg(res)}")
+        except requests.exceptions.ConnectionError:
+            st.session_state.flash_msg = ("error", "Backend unreachable.")
+    st.session_state.is_processing = False
+    st.rerun()
+
+
+# --- DATA FETCHING & STATE VALIDATION ---
+
 available_models = fetch_available_models()
 workspaces = fetch_workspaces()
+
+workspace_ids = [ws["id"] for ws in workspaces]
+if st.session_state.active_workspace_id not in workspace_ids:
+    st.session_state.active_workspace_id = workspace_ids[0] if workspace_ids else None
+
+# Keep widget state perfectly in sync before widget renders
+if st.session_state.active_workspace_id:
+    if (
+        "workspace_selector_widget" not in st.session_state
+        or st.session_state.workspace_selector_widget not in workspace_ids
+    ):
+        st.session_state.workspace_selector_widget = st.session_state.active_workspace_id
+else:
+    st.session_state.pop("workspace_selector_widget", None)
 
 embedding_options = [m for m in available_models if "embed" in m] or [DEFAULT_EMBEDDING_MODEL]
 generation_options = [m for m in available_models if "embed" not in m] or [DEFAULT_GENERATION_MODEL]
@@ -181,14 +280,20 @@ with st.sidebar:
     active_workspace = None
     if workspaces:
         ws_options = {ws["id"]: f"{ws['name']} ({ws['embedding_model']})" for ws in workspaces}
-        selected_ws_id = st.selectbox(
+
+        st.selectbox(
             "Active Workspace",
             options=list(ws_options.keys()),
             format_func=lambda x: ws_options[x],
             disabled=st.session_state.is_processing,
+            key="workspace_selector_widget",
+            on_change=on_workspace_change,
             help="Switch between different indexed document vaults.",
         )
-        active_workspace = next((ws for ws in workspaces if ws["id"] == selected_ws_id), None)
+
+        active_workspace = next(
+            (ws for ws in workspaces if ws["id"] == st.session_state.active_workspace_id), None
+        )
     else:
         st.warning("No workspaces found. Create one below to begin.")
 
@@ -525,6 +630,8 @@ with st.sidebar:
                             f"{API_URL}/workspaces/{active_workspace['id']}"
                         )
                         if del_ws_res.status_code == 200:
+                            st.session_state.active_workspace_id = None
+                            st.session_state.pop("workspace_selector_widget", None)
                             st.session_state.active_thread_id = None
                             st.session_state.current_query = ""
                             st.session_state.batch_report = None
@@ -538,68 +645,6 @@ with st.sidebar:
                             st.error(f"Failed to delete workspace: {get_error_msg(del_ws_res)}")
                     except requests.exceptions.ConnectionError:
                         st.error("Backend unreachable.")
-
-
-# --- BACKGROUND API EXECUTION ---
-
-if st.session_state.pending_workspace:
-    pw = st.session_state.pending_workspace
-    st.session_state.pending_workspace = None
-    with st.spinner(f"Probing model and initializing workspace '{pw['name']}'..."):
-        try:
-            res = requests.post(
-                f"{API_URL}/workspaces/",
-                json={"name": pw["name"], "embedding_model": pw["embedding_model"]},
-            )
-            if res.status_code == 200:
-                st.session_state.ws_name_input_key += 1
-                st.session_state.ws_created = True
-                st.session_state.flash_msg = (
-                    "success",
-                    f"Workspace '{res.json()['name']}' created with `{res.json()['embedding_model']}` and {res.json()['dimension']} dimensions!",
-                )
-            else:
-                st.session_state.flash_msg = ("error", f"Error: {get_error_msg(res)}")
-        except requests.exceptions.ConnectionError:
-            st.session_state.flash_msg = ("error", "Backend unreachable. Is FastAPI running?")
-    st.session_state.is_processing = False
-    st.rerun()
-
-if st.session_state.pending_batch_upload:
-    pu = st.session_state.pending_batch_upload
-    st.session_state.pending_batch_upload = None
-    with st.spinner(f"Batch ingesting {len(pu['files'])} file(s) and calculating embeddings..."):
-        files_payload = [
-            ("files", (name, content, "application/octet-stream")) for name, content in pu["files"]
-        ]
-        data_payload = {
-            "workspace_id": pu["workspace_id"],
-            "embedding_model": pu["embedding_model"],
-        }
-        try:
-            res = requests.post(f"{API_URL}/upload/batch/", files=files_payload, data=data_payload)
-            if res.status_code == 200:
-                report_data = res.json()
-                st.session_state.batch_report = report_data
-                st.session_state.file_uploader_key += 1
-
-                sum_data = report_data["summary"]
-                if sum_data["failed"] == 0:
-                    st.session_state.flash_msg = (
-                        "success",
-                        f"Batch ingestion complete! Processed {sum_data['successful']} new and {sum_data['upserts']} updated files ({sum_data['total_chunks_saved']} chunks saved).",
-                    )
-                else:
-                    st.session_state.flash_msg = (
-                        "error",
-                        f"Batch ingestion finished with errors: {sum_data['failed']} file(s) failed to ingest. Check report from the sidebar.",
-                    )
-            else:
-                st.session_state.flash_msg = ("error", f"Batch upload failed: {get_error_msg(res)}")
-        except requests.exceptions.ConnectionError:
-            st.session_state.flash_msg = ("error", "Backend unreachable.")
-    st.session_state.is_processing = False
-    st.rerun()
 
 
 # --- MAIN CONTENT AREA ---
