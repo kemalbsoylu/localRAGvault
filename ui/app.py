@@ -68,8 +68,27 @@ if "last_active_thread_id" not in st.session_state:
 
 
 def get_error_msg(response: requests.Response) -> str:
+    """Parses FastAPI/Pydantic errors into human-readable strings."""
     try:
-        return response.json().get("detail", response.text)
+        data = response.json()
+        detail = data.get("detail", response.text)
+
+        if isinstance(detail, list):
+            formatted_errors = []
+            for err in detail:
+                loc = [str(x) for x in err.get("loc", []) if x not in ("body", "query", "path")]
+                field_name = " -> ".join(loc) if loc else "Field"
+
+                msg = err.get("msg", "Invalid input")
+                if msg.startswith("Value error, "):
+                    msg = msg.replace("Value error, ", "")
+
+                formatted_errors.append(f"• **{field_name}**: {msg}")
+
+            return "\n" + "\n".join(formatted_errors)
+
+        return str(detail)
+
     except Exception:
         return response.text
 
@@ -515,7 +534,7 @@ with st.sidebar:
                 help="Determines the character length of each individual text block when splitting ingested documents. Larger chunks capture broader context; smaller chunks isolate specific facts.",
             )
 
-            max_allowed_overlap = min(500, int(cfg_chunk_size * 0.5))
+            max_allowed_overlap = int(cfg_chunk_size * 0.5)
             current_overlap = min(active_workspace["chunk_overlap"], max_allowed_overlap)
 
             cfg_chunk_overlap = st.slider(

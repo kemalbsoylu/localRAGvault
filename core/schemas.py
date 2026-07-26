@@ -22,7 +22,7 @@ class WorkspaceCreate(BaseModel):
     name: str = Field(..., description="Human-readable workspace name.")
     embedding_model: str = Field(..., description="The embedding model locked to this workspace.")
     chunk_size: int = Field(default=DEFAULT_CHUNK_SIZE, ge=100, le=2000)
-    chunk_overlap: int = Field(default=DEFAULT_CHUNK_OVERLAP, ge=0, le=500)
+    chunk_overlap: int = Field(default=DEFAULT_CHUNK_OVERLAP, ge=0, le=1000)
     top_k: int = Field(default=DEFAULT_TOP_K, ge=1, le=20)
     similarity_threshold: float = Field(default=DEFAULT_SIMILARITY_THRESHOLD, ge=0.0, le=1.0)
     chat_history_limit: int = Field(default=DEFAULT_CHAT_HISTORY_LIMIT, ge=1, le=20)
@@ -44,7 +44,7 @@ class WorkspaceCreate(BaseModel):
 
 class WorkspaceUpdate(BaseModel):
     chunk_size: Optional[int] = Field(default=None, ge=100, le=2000)
-    chunk_overlap: Optional[int] = Field(default=None, ge=0, le=500)
+    chunk_overlap: Optional[int] = Field(default=None, ge=0, le=1000)
     top_k: Optional[int] = Field(default=None, ge=1, le=20)
     similarity_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     chat_history_limit: Optional[int] = Field(default=None, ge=1, le=20)
