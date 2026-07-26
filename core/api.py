@@ -276,7 +276,7 @@ def list_workspace_threads(
 @app.get("/threads/{thread_id}/messages", response_model=ThreadHistoryResponse)
 def get_thread_history(
     thread_id: str,
-    limit: int = Query(default=10, ge=1, le=100),
+    limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=100),
     offset: int = Query(default=DEFAULT_PAGE_OFFSET, ge=0),
 ) -> ThreadHistoryResponse:
     """Returns the chronological message history for a specific thread, with pagination support."""

@@ -378,7 +378,7 @@ with st.sidebar:
 
                     if st.session_state.inventory_limit > DEFAULT_PAGE_LIMIT:
                         if st.button(
-                            "⬆️ Show Fewer Files",
+                            "⬆️ Show Recent Files Only",
                             key="btn_show_less_inv",
                             use_container_width=True,
                             disabled=st.session_state.is_processing,
@@ -450,7 +450,7 @@ with st.sidebar:
                 value=active_workspace["chat_history_limit"],
                 step=1,
                 disabled=st.session_state.is_processing,
-                help="The number of recent conversational turns (user queries and assistant replies) included in the memory payload to maintain multi-turn context. (Default=6)",
+                help="The number of recent conversational turns (user queries and assistant replies) included in the memory payload to maintain multi-turn context. (Default=10)",
             )
 
             st.markdown("---")
@@ -461,7 +461,7 @@ with st.sidebar:
                 placeholder="e.g., Respond using concise technical bullet points.",
                 height=100,
                 disabled=st.session_state.is_processing,
-                help="Custom behavioral persona or strict operational instructions injected at the top of the LLM prompt hierarchy.",
+                help="Custom behavioral persona or strict operational instructions injected at the the LLM prompt.",
             )
 
             btn_save_settings = st.button(
@@ -970,7 +970,7 @@ else:
 
         if st.session_state.threads_limit > DEFAULT_PAGE_LIMIT:
             if st.button(
-                "⬆️ Show Fewer Threads",
+                "⬆️ Show Recent Threads Only",
                 key="btn_show_less_threads",
                 use_container_width=True,
                 disabled=st.session_state.is_processing,
