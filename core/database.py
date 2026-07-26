@@ -14,6 +14,8 @@ from core.config import (
     DEFAULT_CHAT_HISTORY_LIMIT,
     DEFAULT_CHUNK_OVERLAP,
     DEFAULT_CHUNK_SIZE,
+    DEFAULT_PAGE_LIMIT,
+    DEFAULT_PAGE_OFFSET,
     DEFAULT_SIMILARITY_THRESHOLD,
     DEFAULT_SYSTEM_PROMPT,
     DEFAULT_TOP_K,
@@ -279,28 +281,38 @@ def insert_document_chunks(
         raise
 
 
-def fetch_workspace_inventory(workspace_id: str) -> List[dict]:
-    """Retrieves file aggregates for a given workspace."""
+def fetch_workspace_inventory(
+    workspace_id: str, limit: int = DEFAULT_PAGE_LIMIT, offset: int = DEFAULT_PAGE_OFFSET
+) -> Tuple[List[dict], int]:
+    """Retrieves paginated file aggregates and total document count for a given workspace."""
     inventory = []
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(DISTINCT filename) FROM documents WHERE workspace_id = %s;",
+                    (workspace_id,),
+                )
+                count_row = cur.fetchone()
+                total_count = int(count_row[0]) if count_row is not None else 0
+
                 cur.execute(
                     """
                     SELECT filename, file_path, COUNT(*) as total_chunks
                     FROM documents
                     WHERE workspace_id = %s
                     GROUP BY filename, file_path
-                    ORDER BY filename ASC;
+                    ORDER BY filename ASC
+                    LIMIT %s OFFSET %s;
                     """,
-                    (workspace_id,),
+                    (workspace_id, limit, offset),
                 )
                 rows = cur.fetchall()
                 for row in rows:
                     inventory.append(
                         {"filename": row[0], "file_path": row[1], "total_chunks": row[2]}
                     )
-        return inventory
+        return inventory, total_count
     except Exception as e:
         logger.error(f"Database error while fetching inventory for workspace {workspace_id}: {e}")
         raise
@@ -312,7 +324,7 @@ def search_vector_db(
     top_k: int = DEFAULT_TOP_K,
     similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
 ) -> List[dict]:
-    """Performs vector search against document chunks, enforcing similarity threshold filtering."""
+    """Performs semantic vector search against document chunks, enforcing similarity threshold filtering."""
     results = []
     try:
         with get_db_connection() as conn:
@@ -383,21 +395,30 @@ def get_thread(thread_id: str) -> Optional[dict]:
         raise
 
 
-def get_workspace_threads(workspace_id: str) -> List[dict]:
-    """Retrieves all conversation threads for a workspace, ordered by most recently active."""
+def get_workspace_threads(
+    workspace_id: str, limit: int = DEFAULT_PAGE_LIMIT, offset: int = DEFAULT_PAGE_OFFSET
+) -> Tuple[List[dict], int]:
+    """Retrieves paginated conversation threads for a workspace, ordered by most recently active, along with total count."""
     threads = []
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM threads WHERE workspace_id = %s;", (workspace_id,)
+                )
+                count_row = cur.fetchone()
+                total_count = int(count_row[0]) if count_row is not None else 0
+
                 cur.execute(
                     """
                     SELECT t.id, t.title, t.created_at, t.updated_at,
                            (SELECT COUNT(*) FROM messages m WHERE m.thread_id = t.id) as msg_count
                     FROM threads t
                     WHERE t.workspace_id = %s
-                    ORDER BY t.updated_at DESC LIMIT 50;
+                    ORDER BY t.updated_at DESC
+                    LIMIT %s OFFSET %s;
                     """,
-                    (workspace_id,),
+                    (workspace_id, limit, offset),
                 )
                 thread_rows = cur.fetchall()
                 for row in thread_rows:
@@ -437,7 +458,7 @@ def get_workspace_threads(workspace_id: str) -> List[dict]:
                             "sources": sources,
                         }
                     )
-        return threads
+        return threads, total_count
     except Exception as e:
         logger.error(f"Database error fetching threads for workspace {workspace_id}: {e}")
         raise
@@ -472,12 +493,18 @@ def add_message(
         raise
 
 
-def get_thread_messages(thread_id: str, limit: int = DEFAULT_CHAT_HISTORY_LIMIT) -> List[dict]:
-    """Retrieves conversation history for a thread in chronological order."""
+def get_thread_messages(
+    thread_id: str, limit: int = DEFAULT_CHAT_HISTORY_LIMIT, offset: int = DEFAULT_PAGE_OFFSET
+) -> Tuple[List[dict], int]:
+    """Retrieves paginated conversation history for a thread in chronological order, along with total count."""
     messages = []
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM messages WHERE thread_id = %s;", (thread_id,))
+                count_row = cur.fetchone()
+                total_count = int(count_row[0]) if count_row is not None else 0
+
                 cur.execute(
                     """
                     SELECT id, role, content, sources, model_used, created_at
@@ -486,11 +513,11 @@ def get_thread_messages(thread_id: str, limit: int = DEFAULT_CHAT_HISTORY_LIMIT)
                         FROM messages
                         WHERE thread_id = %s
                         ORDER BY created_at DESC
-                        LIMIT %s
+                        LIMIT %s OFFSET %s
                     ) sub
                     ORDER BY created_at ASC;
                     """,
-                    (thread_id, limit),
+                    (thread_id, limit, offset),
                 )
                 for row in cur.fetchall():
                     messages.append(
@@ -503,7 +530,7 @@ def get_thread_messages(thread_id: str, limit: int = DEFAULT_CHAT_HISTORY_LIMIT)
                             "created_at": str(row[5]),
                         }
                     )
-        return messages
+        return messages, total_count
     except Exception as e:
         logger.error(f"Database error fetching messages for thread {thread_id}: {e}")
         raise

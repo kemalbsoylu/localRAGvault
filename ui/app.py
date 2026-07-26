@@ -6,7 +6,13 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 import requests
 import streamlit as st
 
-from core.config import DEFAULT_EMBEDDING_MODEL, DEFAULT_GENERATION_MODEL, MAX_FILE_SIZE_MB
+from core.config import (
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_GENERATION_MODEL,
+    DEFAULT_PAGE_LIMIT,
+    DEFAULT_PAGE_OFFSET,
+    MAX_FILE_SIZE_MB,
+)
 
 API_URL = "http://127.0.0.1:8000"
 
@@ -40,6 +46,24 @@ if "search_input_key" not in st.session_state:
 if "ws_created" not in st.session_state:
     st.session_state.ws_created = False
 
+# --- Pagination & UI State Initialization ---
+if "threads_limit" not in st.session_state:
+    st.session_state.threads_limit = DEFAULT_PAGE_LIMIT
+if "threads_offset" not in st.session_state:
+    st.session_state.threads_offset = DEFAULT_PAGE_OFFSET
+if "messages_limit" not in st.session_state:
+    st.session_state.messages_limit = DEFAULT_PAGE_LIMIT * 2
+if "messages_offset" not in st.session_state:
+    st.session_state.messages_offset = DEFAULT_PAGE_OFFSET
+if "inventory_limit" not in st.session_state:
+    st.session_state.inventory_limit = DEFAULT_PAGE_LIMIT
+if "inventory_offset" not in st.session_state:
+    st.session_state.inventory_offset = DEFAULT_PAGE_OFFSET
+if "last_active_workspace_id" not in st.session_state:
+    st.session_state.last_active_workspace_id = None
+if "last_active_thread_id" not in st.session_state:
+    st.session_state.last_active_thread_id = None
+
 
 def get_error_msg(response: requests.Response) -> str:
     try:
@@ -69,14 +93,21 @@ def fetch_workspaces():
     return []
 
 
-def fetch_workspace_threads(workspace_id: str):
+def fetch_workspace_threads(
+    workspace_id: str,
+    limit: int = DEFAULT_PAGE_LIMIT,
+    offset: int = DEFAULT_PAGE_OFFSET,
+):
     try:
-        res = requests.get(f"{API_URL}/workspaces/{workspace_id}/threads")
+        res = requests.get(
+            f"{API_URL}/workspaces/{workspace_id}/threads",
+            params={"limit": limit, "offset": offset},
+        )
         if res.status_code == 200:
-            return res.json().get("threads", [])
+            return res.json()
     except requests.exceptions.ConnectionError:
         pass
-    return []
+    return {"threads": [], "total_count": 0, "has_more": False}
 
 
 def render_sources_section(
@@ -194,6 +225,15 @@ with st.sidebar:
                     st.rerun()
 
     if active_workspace:
+        # Reset pagination limits automatically when switching workspaces
+        if st.session_state.last_active_workspace_id != active_workspace["id"]:
+            st.session_state.last_active_workspace_id = active_workspace["id"]
+            st.session_state.threads_limit = DEFAULT_PAGE_LIMIT
+            st.session_state.threads_offset = DEFAULT_PAGE_OFFSET
+            st.session_state.inventory_limit = DEFAULT_PAGE_LIMIT
+            st.session_state.inventory_offset = DEFAULT_PAGE_OFFSET
+            st.session_state.active_thread_id = None
+
         st.markdown("---")
         st.header("Add to Vault")
 
@@ -280,9 +320,19 @@ with st.sidebar:
             st.rerun()
 
         try:
-            inv_res = requests.get(f"{API_URL}/inventory/{active_workspace['id']}")
+            inv_res = requests.get(
+                f"{API_URL}/inventory/{active_workspace['id']}",
+                params={
+                    "limit": st.session_state.inventory_limit,
+                    "offset": st.session_state.inventory_offset,
+                },
+            )
             if inv_res.status_code == 200:
-                inventory = inv_res.json().get("documents", [])
+                inv_payload = inv_res.json()
+                inventory = inv_payload.get("documents", [])
+                total_docs = inv_payload.get("total_count", 0)
+                has_more_docs = inv_payload.get("has_more", False)
+
                 if inventory:
                     for doc in inventory:
                         with st.expander(f"📄 {doc['filename']}"):
@@ -312,6 +362,27 @@ with st.sidebar:
                                         st.rerun()
                                     else:
                                         st.error(f"Deletion failed: {get_error_msg(del_res)}")
+
+                    # Pagination Controls for Inventory
+                    if has_more_docs or total_docs > len(inventory):
+                        if st.button(
+                            f"⬇️ Load More Files ({total_docs - len(inventory)} remaining)",
+                            key="btn_load_more_inv",
+                            use_container_width=True,
+                            disabled=st.session_state.is_processing,
+                        ):
+                            st.session_state.inventory_limit += DEFAULT_PAGE_LIMIT
+                            st.rerun()
+
+                    if st.session_state.inventory_limit > DEFAULT_PAGE_LIMIT:
+                        if st.button(
+                            "⬆️ Show Fewer Files",
+                            key="btn_show_less_inv",
+                            use_container_width=True,
+                            disabled=st.session_state.is_processing,
+                        ):
+                            st.session_state.inventory_limit = DEFAULT_PAGE_LIMIT
+                            st.rerun()
                 else:
                     st.info("Vault is empty.")
             else:
@@ -531,11 +602,36 @@ if st.session_state.pending_batch_upload:
 
 # --- MAIN CONTENT AREA ---
 
-threads = fetch_workspace_threads(active_workspace["id"]) if active_workspace else []
+threads_payload = (
+    fetch_workspace_threads(
+        active_workspace["id"],
+        limit=st.session_state.threads_limit,
+        offset=st.session_state.threads_offset,
+    )
+    if active_workspace
+    else {}
+)
+threads = threads_payload.get("threads", [])
+total_threads = threads_payload.get("total_count", 0)
+has_more_threads = threads_payload.get("has_more", False)
 
+# Safely check if active thread was closed or deleted
 if st.session_state.active_thread_id:
+    if st.session_state.last_active_thread_id != st.session_state.active_thread_id:
+        st.session_state.last_active_thread_id = st.session_state.active_thread_id
+        st.session_state.messages_limit = DEFAULT_PAGE_LIMIT * 2
+        st.session_state.messages_offset = DEFAULT_PAGE_OFFSET
+
     if not any(t["id"] == st.session_state.active_thread_id for t in threads):
-        st.session_state.active_thread_id = None
+        try:
+            chk_res = requests.get(
+                f"{API_URL}/threads/{st.session_state.active_thread_id}/messages",
+                params={"limit": 1},
+            )
+            if chk_res.status_code == 404:
+                st.session_state.active_thread_id = None
+        except requests.exceptions.ConnectionError:
+            pass
 
 if not active_workspace:
     st.info("👈 Create and select a workspace from the sidebar to begin.")
@@ -565,9 +661,48 @@ elif st.session_state.active_thread_id:
     st.markdown("---")
 
     try:
-        res = requests.get(f"{API_URL}/threads/{st.session_state.active_thread_id}/messages")
+        res = requests.get(
+            f"{API_URL}/threads/{st.session_state.active_thread_id}/messages",
+            params={
+                "limit": st.session_state.messages_limit,
+                "offset": st.session_state.messages_offset,
+            },
+        )
         if res.status_code == 200:
-            history_data = res.json().get("messages", [])
+            history_payload = res.json()
+            history_data = history_payload.get("messages", [])
+            total_msgs = history_payload.get("total_count", 0)
+            has_older = history_payload.get("has_more", False)
+
+            # "Load Older Messages" Button at top of Chat
+            initial_msg_limit = DEFAULT_PAGE_LIMIT * 2
+            if has_older or total_msgs > len(history_data):
+                col_older, col_reset = (
+                    st.columns([7, 3])
+                    if st.session_state.messages_limit > initial_msg_limit
+                    else st.columns([1, 0.01])
+                )
+                with col_older:
+                    if st.button(
+                        f"⬆️ Load Older Messages ({total_msgs - len(history_data)} earlier messages)",
+                        key="btn_load_older_msgs",
+                        use_container_width=True,
+                        disabled=st.session_state.is_processing,
+                    ):
+                        st.session_state.messages_limit += DEFAULT_PAGE_LIMIT * 2
+                        st.rerun()
+                if st.session_state.messages_limit > initial_msg_limit:
+                    with col_reset:
+                        if st.button(
+                            "⬇️ Show Recent Only",
+                            key="btn_reset_msgs",
+                            use_container_width=True,
+                            disabled=st.session_state.is_processing,
+                        ):
+                            st.session_state.messages_limit = initial_msg_limit
+                            st.rerun()
+                st.markdown("---")
+
             for msg in history_data:
                 icon = "👤" if msg["role"] == "user" else "🤖"
                 with st.chat_message(msg["role"], avatar=icon):
@@ -756,7 +891,10 @@ else:
     st.markdown("---")
 
     if not threads:
-        st.info("No conversations yet. Ask a question above to start searching!")
+        if total_threads == 0:
+            st.info("No conversations yet. Ask a question above to start searching!")
+        else:
+            st.info("No threads matching the current view.")
     else:
         for t in threads:
             with st.container(border=True):
@@ -816,3 +954,25 @@ else:
                                     st.error(f"Deletion failed: {get_error_msg(del_res)}")
                             except requests.exceptions.ConnectionError:
                                 st.error("Backend unreachable.")
+
+        # Pagination Controls for Threads
+        st.markdown("---")
+        if has_more_threads or total_threads > len(threads):
+            if st.button(
+                f"⬇️ Load More Threads ({total_threads - len(threads)} older threads)",
+                key="btn_load_more_threads",
+                use_container_width=True,
+                disabled=st.session_state.is_processing,
+            ):
+                st.session_state.threads_limit += DEFAULT_PAGE_LIMIT
+                st.rerun()
+
+        if st.session_state.threads_limit > DEFAULT_PAGE_LIMIT:
+            if st.button(
+                "⬆️ Show Fewer Threads",
+                key="btn_show_less_threads",
+                use_container_width=True,
+                disabled=st.session_state.is_processing,
+            ):
+                st.session_state.threads_limit = DEFAULT_PAGE_LIMIT
+                st.rerun()

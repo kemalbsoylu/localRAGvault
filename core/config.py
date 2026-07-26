@@ -38,6 +38,11 @@ DEFAULT_CHAT_HISTORY_LIMIT = int(os.getenv("DEFAULT_CHAT_HISTORY_LIMIT", "6"))
 DEFAULT_SYSTEM_PROMPT = os.getenv("DEFAULT_SYSTEM_PROMPT", "")
 
 
+# Pagination System Defaults
+DEFAULT_PAGE_LIMIT = int(os.getenv("DEFAULT_PAGE_LIMIT", "5"))
+DEFAULT_PAGE_OFFSET = int(os.getenv("DEFAULT_PAGE_OFFSET", "0"))
+
+
 # File Storage Configuration
 if os.getenv("DB_NAME") == "localragvault_test":
     UPLOAD_DIR = BASE_DIR / "uploads_test"

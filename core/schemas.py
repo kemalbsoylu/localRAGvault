@@ -156,6 +156,10 @@ class ThreadCard(BaseModel):
 class ThreadListResponse(BaseModel):
     workspace_id: str
     threads: List[ThreadCard]
+    total_count: int = 0
+    limit: int = 5
+    offset: int = 0
+    has_more: bool = False
 
 
 class MessageCard(BaseModel):
@@ -170,6 +174,10 @@ class MessageCard(BaseModel):
 class ThreadHistoryResponse(BaseModel):
     thread_id: str
     messages: List[MessageCard]
+    total_count: int = 0
+    limit: int = 10
+    offset: int = 0
+    has_more: bool = False
 
 
 class IngestionResponse(BaseModel):
@@ -201,6 +209,10 @@ class DocumentInventoryItem(BaseModel):
 class WorkspaceInventoryResponse(BaseModel):
     workspace_id: str
     documents: List[DocumentInventoryItem]
+    total_count: int = 0
+    limit: int = 5
+    offset: int = 0
+    has_more: bool = False
 
 
 class FileIngestionResult(BaseModel):

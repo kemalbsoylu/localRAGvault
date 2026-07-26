@@ -3,9 +3,14 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator, List
 
 import psycopg
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 
-from core.config import DEFAULT_EMBEDDING_MODEL, MAX_FILE_SIZE_MB
+from core.config import (
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_PAGE_LIMIT,
+    DEFAULT_PAGE_OFFSET,
+    MAX_FILE_SIZE_MB,
+)
 from core.database import (
     add_message,
     create_thread,
@@ -225,14 +230,19 @@ def remove_workspace(workspace_id: str) -> dict:
 
 
 @app.get("/workspaces/{workspace_id}/threads", response_model=ThreadListResponse)
-def list_workspace_threads(workspace_id: str) -> ThreadListResponse:
-    """Returns a list of all conversation threads inside a workspace."""
+def list_workspace_threads(
+    workspace_id: str,
+    limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=100),
+    offset: int = Query(default=DEFAULT_PAGE_OFFSET, ge=0),
+) -> ThreadListResponse:
+    """Returns a paginated list of conversation threads inside a workspace."""
     try:
         ws = get_workspace(workspace_id)
         if not ws:
             logger.warning(f"Thread listing failed: Workspace '{workspace_id}' not found.")
             raise HTTPException(status_code=404, detail="Workspace not found.")
-        raw_threads = get_workspace_threads(workspace_id)
+
+        raw_threads, total_count = get_workspace_threads(workspace_id, limit=limit, offset=offset)
         threads = [
             ThreadCard(
                 id=t["id"],
@@ -247,7 +257,15 @@ def list_workspace_threads(workspace_id: str) -> ThreadListResponse:
             )
             for t in raw_threads
         ]
-        return ThreadListResponse(workspace_id=workspace_id, threads=threads)
+        has_more = (offset + len(threads)) < total_count
+        return ThreadListResponse(
+            workspace_id=workspace_id,
+            threads=threads,
+            total_count=total_count,
+            limit=limit,
+            offset=offset,
+            has_more=has_more,
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -256,14 +274,19 @@ def list_workspace_threads(workspace_id: str) -> ThreadListResponse:
 
 
 @app.get("/threads/{thread_id}/messages", response_model=ThreadHistoryResponse)
-def get_thread_history(thread_id: str) -> ThreadHistoryResponse:
-    """Returns the full chronological message history for a specific thread."""
+def get_thread_history(
+    thread_id: str,
+    limit: int = Query(default=10, ge=1, le=100),
+    offset: int = Query(default=DEFAULT_PAGE_OFFSET, ge=0),
+) -> ThreadHistoryResponse:
+    """Returns the chronological message history for a specific thread, with pagination support."""
     try:
         t = get_thread(thread_id)
         if not t:
             logger.warning(f"Message history fetch failed: Thread '{thread_id}' not found.")
             raise HTTPException(status_code=404, detail="Thread not found.")
-        raw_messages = get_thread_messages(thread_id, limit=50)
+
+        raw_messages, total_count = get_thread_messages(thread_id, limit=limit, offset=offset)
         messages = [
             MessageCard(
                 id=m["id"],
@@ -275,7 +298,15 @@ def get_thread_history(thread_id: str) -> ThreadHistoryResponse:
             )
             for m in raw_messages
         ]
-        return ThreadHistoryResponse(thread_id=thread_id, messages=messages)
+        has_more = (offset + len(messages)) < total_count
+        return ThreadHistoryResponse(
+            thread_id=thread_id,
+            messages=messages,
+            total_count=total_count,
+            limit=limit,
+            offset=offset,
+            has_more=has_more,
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -308,15 +339,21 @@ def remove_thread(thread_id: str) -> dict:
 
 
 @app.get("/inventory/{workspace_id}", response_model=WorkspaceInventoryResponse)
-def get_workspace_inventory(workspace_id: str) -> WorkspaceInventoryResponse:
-    """Returns a list of physical files currently indexed for a given workspace."""
+def get_workspace_inventory(
+    workspace_id: str,
+    limit: int = Query(default=DEFAULT_PAGE_LIMIT, ge=1, le=100),
+    offset: int = Query(default=DEFAULT_PAGE_OFFSET, ge=0),
+) -> WorkspaceInventoryResponse:
+    """Returns a paginated list of physical files currently indexed for a given workspace."""
     try:
         ws = get_workspace(workspace_id)
         if not ws:
             logger.warning(f"Inventory fetch failed: Workspace '{workspace_id}' not found.")
             raise HTTPException(status_code=404, detail="Target workspace does not exist.")
 
-        raw_inventory = fetch_workspace_inventory(workspace_id)
+        raw_inventory, total_count = fetch_workspace_inventory(
+            workspace_id, limit=limit, offset=offset
+        )
         documents = [
             DocumentInventoryItem(
                 filename=item["filename"],
@@ -325,7 +362,15 @@ def get_workspace_inventory(workspace_id: str) -> WorkspaceInventoryResponse:
             )
             for item in raw_inventory
         ]
-        return WorkspaceInventoryResponse(workspace_id=workspace_id, documents=documents)
+        has_more = (offset + len(documents)) < total_count
+        return WorkspaceInventoryResponse(
+            workspace_id=workspace_id,
+            documents=documents,
+            total_count=total_count,
+            limit=limit,
+            offset=offset,
+            has_more=has_more,
+        )
     except HTTPException:
         raise
     except Exception as e:
@@ -717,7 +762,9 @@ def ask_question(search: SearchQuery) -> RAGQueryResponse:
             if not get_thread(thread_id):
                 logger.warning(f"Ask aborted: Thread '{thread_id}' not found.")
                 raise HTTPException(status_code=404, detail=f"Thread '{thread_id}' not found.")
-            chat_history = get_thread_messages(thread_id, limit=effective_history_limit)
+            chat_history, _ = get_thread_messages(
+                thread_id, limit=effective_history_limit, offset=0
+            )
             logger.info(f"Loaded {len(chat_history)} historical messages for thread {thread_id}.")
         else:
             thread_id = str(uuid.uuid4())
