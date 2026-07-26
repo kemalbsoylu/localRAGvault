@@ -780,7 +780,6 @@ def ask_question(search: SearchQuery) -> RAGQueryResponse:
             context_chunks=raw_results,
             model_name=search.generation_model,
             chat_history=chat_history,
-            top_k=effective_top_k,
             temperature=effective_temp,
             system_prompt=ws["system_prompt"],
         )

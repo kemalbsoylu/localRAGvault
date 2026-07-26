@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import ollama
+from ollama import ResponseError
 
 from core.config import (
     ALLOW_CLOUD_MODELS,
@@ -11,7 +12,6 @@ from core.config import (
     DEFAULT_CHUNK_SIZE,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_GENERATION_MODEL,
-    DEFAULT_TOP_K,
     OLLAMA_BASE_URL,
     UPLOAD_DIR,
 )
@@ -91,11 +91,13 @@ def generate_answer(
     context_chunks: List[dict],
     model_name: str = DEFAULT_GENERATION_MODEL,
     chat_history: Optional[List[dict]] = None,
-    top_k: int = DEFAULT_TOP_K,
     temperature: Optional[float] = None,
     system_prompt: Optional[str] = None,
 ) -> LLMInternalResponse:
-    """Sends retrieved context, enriched chat history, and user query to the local LLM."""
+    """
+    Executes a native multi-turn chat completion using Ollama's structured chat API.
+    Synthesizes retrieved context chunks, historical messages, and persona rules without metadata pollution.
+    """
     target_model = normalize_model_name(model_name)
     fallback_msg = "I cannot answer this based on the provided documents."
 
@@ -109,66 +111,70 @@ def generate_answer(
 
     context_text = "\n\n---\n\n".join(formatted_context_blocks)
 
-    history_block = ""
-    if chat_history:
-        formatted_turns = []
-        for msg in chat_history:
-            role_label = "User" if msg["role"] == "user" else "Assistant"
-            turn_text = f"{role_label}: {msg['content']}"
-
-            if msg["role"] == "assistant" and msg.get("sources"):
-                source_labels = [
-                    f"[*{s_idx}] {s['filename']} (Chunk #{s.get('chunk_index', '?')})"
-                    for s_idx, s in enumerate(msg["sources"][:top_k], start=1)
-                ]
-                if source_labels:
-                    turn_text += f"\n  [Relevant Document Chunks for previous turn: {', '.join(source_labels)}]"
-
-            formatted_turns.append(turn_text)
-
-        if formatted_turns:
-            history_str = "\n".join(formatted_turns)
-            history_block = f"\n### Previous Conversation History:\n{history_str}\n"
-
-    custom_instructions = (
-        f"\n### Additional Workspace System Persona/Instructions:\n{system_prompt}\n"
-        if system_prompt and system_prompt.strip()
-        else ""
-    )
-
-    prompt = f"""You are a knowledgeable, analytical assistant for a private document vault.
+    base_system_rules = f"""You are a knowledgeable, analytical assistant for a private document vault.
 Your task is to answer the user's question by synthesizing and explaining information from the provided document chunks and conversation history.
-{custom_instructions}
+
 ### Strict Operating Rules:
 1. Ground your reasoning strictly in the provided context chunks and conversation history. Do NOT use outside knowledge or assume facts not directly supported by the text.
-2. When referencing facts from the context, insert concise numerical tags in the flowing text corresponding to the source number.
+2. When referencing facts from the active context, insert concise numerical tags corresponding to the source number (e.g., [1], [2]). These tags refer ONLY to the Active Retrieved Document Context in the current prompt.
 3. Synthesize and explain concepts in clear, natural language—do not copy-paste raw sentences verbatim unless quoting specific data or technical terms.
-4. If the user asks a follow-up question about previous answers, answer directly using the Previous Conversation History and its [Relevant Document Chunks for previous turn] info for each answer.
-5. If the context contains relevant information that only partially answers the question, explain what the documents reveal and note what details are missing.
-6. If the provided context and conversation history are completely irrelevant or contain no information to answer the question, respond EXACTLY with this string: "{fallback_msg}"
-{history_block}
-### Active Retrieved Document Context:
+4. If the user asks a follow-up question about previous turns, answer directly using the facts established in the previous assistant replies.
+5. Do NOT generate lists of used sources, metadata footers, or bibliography sections at the end of your response.
+6. If the context contains relevant information that only partially answers the question, explain what the documents reveal and note what details are missing.
+7. If the provided context and conversation history contain no information to answer the question, respond EXACTLY with this string: "{fallback_msg}"
+"""
+
+    if system_prompt and system_prompt.strip():
+        base_system_rules += (
+            f"\n\n### Additional Workspace System Persona:\n{system_prompt.strip()}"
+        )
+
+    messages_payload: List[dict] = [{"role": "system", "content": base_system_rules}]
+
+    if chat_history:
+        for msg in chat_history:
+            role = msg.get("role", "").lower()
+            if role not in ("user", "assistant"):
+                continue
+
+            content_text = msg.get("content", "").strip()
+            if content_text:
+                messages_payload.append({"role": role, "content": content_text})
+
+    final_user_content = f"""### Active Retrieved Document Context:
 {context_text}
 
 ### Current User Question:
 {query}
+"""
 
-### Answer:"""
+    messages_payload.append({"role": "user", "content": final_user_content})
 
     options_dict = {"temperature": temperature} if temperature is not None else None
 
+    logger.debug(
+        f"Executing Ollama chat completion under '{target_model}' with {len(messages_payload)} total turns."
+    )
+
     try:
-        response = ollama_client.generate(
+        response = ollama_client.chat(
             model=target_model,
-            prompt=prompt,
+            messages=messages_payload,
             options=options_dict,
         )
-        answer_text = response["response"].strip()
-        is_valid = fallback_msg not in answer_text
 
+        answer_text = response.get("message", {}).get("content", "").strip()
+        if not answer_text:
+            logger.warning(f"Model '{target_model}' returned an empty response payload.")
+            return LLMInternalResponse(
+                text="The model returned an empty response. Please try modifying your query.",
+                is_valid=False,
+            )
+
+        is_valid = fallback_msg not in answer_text
         return LLMInternalResponse(text=answer_text, is_valid=is_valid)
 
-    except ollama.ResponseError as e:
+    except ResponseError as e:
         logger.error(
             f"Ollama API ResponseError under [{target_model}] (status code: {e.status_code}): {e.error}"
         )
@@ -203,7 +209,7 @@ Your task is to answer the user's question by synthesizing and explaining inform
         return LLMInternalResponse(text=friendly_msg, is_valid=False)
 
     except Exception as e:
-        logger.error(f"Unexpected execution error under [{target_model}]: {e}")
+        logger.error(f"Unexpected execution error under [{target_model}]: {e}", exc_info=True)
         return LLMInternalResponse(
             text="Connection to local Ollama daemon failed. Ensure the Ollama service is running.",
             is_valid=False,
