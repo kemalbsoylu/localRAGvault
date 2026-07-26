@@ -67,25 +67,68 @@ def test_delete_workspace_endpoint() -> None:
     """Verify deleting a workspace wipes database records and blocks future searches."""
     ws_id = _create_test_workspace("To Be Deleted WS")
 
-    # Upload a document to verify cascade deletion
     client.post(
         "/upload/",
         files={"file": ("dummy.txt", b"temporary content", "text/plain")},
         data={"workspace_id": ws_id},
     )
 
-    # Delete workspace
     del_res = client.delete(f"/workspaces/{ws_id}")
     assert del_res.status_code == 200
     assert del_res.json()["status"] == "success"
 
-    # Verify workspace is gone from inventory check
     inv_res = client.get(f"/inventory/{ws_id}")
     assert inv_res.status_code == 404
 
 
 # =====================================================================
-# --- 3. DOCUMENT INGESTION, MULTI-FORMAT & UPSERT TESTS ---
+# --- 3. WORKSPACE SETTINGS PATCH & VALIDATION TESTS ---
+# =====================================================================
+
+
+def test_patch_workspace_settings_success() -> None:
+    """Test dynamically updating chunking physics, retrieval depth, and system instructions."""
+    ws_id = _create_test_workspace("Settings Patch WS")
+    updates = {
+        "chunk_size": 800,
+        "chunk_overlap": 150,
+        "top_k": 8,
+        "similarity_threshold": 0.25,
+        "chat_history_limit": 10,
+        "system_prompt": "Always respond using concise technical bullet points.",
+    }
+    res = client.patch(f"/workspaces/{ws_id}", json=updates)
+    assert res.status_code == 200
+    data = res.json()
+    assert data["chunk_size"] == 800
+    assert data["chunk_overlap"] == 150
+    assert data["top_k"] == 8
+    assert round(data["similarity_threshold"], 2) == 0.25
+    assert data["chat_history_limit"] == 10
+    assert data["system_prompt"] == "Always respond using concise technical bullet points."
+
+
+def test_patch_workspace_overlap_validation() -> None:
+    """Verify setting chunk_overlap >= chunk_size triggers a strict HTTP 400/422 rejection."""
+    ws_id = _create_test_workspace("Overlap Validation WS")
+    res = client.patch(f"/workspaces/{ws_id}", json={"chunk_size": 500, "chunk_overlap": 500})
+    assert res.status_code in (400, 422)
+
+
+def test_create_workspace_overlap_validation() -> None:
+    """Verify Pydantic schema validator blocks invalid overlap bounds during workspace creation."""
+    payload = {
+        "name": "Invalid Overlap WS",
+        "embedding_model": DEFAULT_EMBEDDING_MODEL,
+        "chunk_size": 400,
+        "chunk_overlap": 450,
+    }
+    res = client.post("/workspaces/", json=payload)
+    assert res.status_code == 422
+
+
+# =====================================================================
+# --- 4. DOCUMENT INGESTION, MULTI-FORMAT & UPSERT TESTS ---
 # =====================================================================
 
 
@@ -137,14 +180,12 @@ def test_upload_clean_upsert() -> None:
     """Test that re-uploading an existing file name purges old chunks before saving new ones."""
     ws_id = _create_test_workspace("Upsert WS")
 
-    # 1. Initial upload
     files = {"file": ("versioned.txt", b"Version 1 content string.", "text/plain")}
     res1 = client.post("/upload/", files=files, data={"workspace_id": ws_id})
     assert res1.status_code == 200
     assert res1.json()["is_upsert"] is False
     initial_chunks = res1.json()["chunks_saved"]
 
-    # 2. Re-upload same filename with new content
     files_updated = {
         "file": ("versioned.txt", b"Version 2 updated expanded content string.", "text/plain")
     }
@@ -181,7 +222,7 @@ def test_upload_corrupted_encoding_binary() -> None:
 
 
 # =====================================================================
-# --- 4. DOCUMENT DELETION & INVENTORY TESTS ---
+# --- 5. DOCUMENT DELETION & INVENTORY TESTS ---
 # =====================================================================
 
 
@@ -189,30 +230,26 @@ def test_workspace_inventory_and_deletion() -> None:
     """Verify inventory tracking and single document deletion loops."""
     ws_id = _create_test_workspace("Inventory Tracking WS")
 
-    # Upload file
     client.post(
         "/upload/",
         files={"file": ("to_delete.txt", b"Delete me soon.", "text/plain")},
         data={"workspace_id": ws_id},
     )
 
-    # Verify present in inventory
     inv_res = client.get(f"/inventory/{ws_id}")
     assert inv_res.status_code == 200
     assert len(inv_res.json()["documents"]) == 1
 
-    # Delete document
     del_res = client.delete(f"/documents/{ws_id}/to_delete.txt")
     assert del_res.status_code == 200
     assert del_res.json()["chunks_deleted"] > 0
 
-    # Verify inventory is empty
     inv_res_after = client.get(f"/inventory/{ws_id}")
     assert len(inv_res_after.json()["documents"]) == 0
 
 
 # =====================================================================
-# --- 5. VECTOR SEARCH & CHUNK METADATA TESTS ---
+# --- 6. VECTOR SEARCH & CHUNK METADATA TESTS ---
 # =====================================================================
 
 
@@ -220,7 +257,6 @@ def test_search_documents_response_contract() -> None:
     """Test vector search functionality, verifying chunk_index is returned."""
     ws_id = _create_test_workspace("Search Contract Test WS")
 
-    # Ingest dummy document
     client.post(
         "/upload/",
         files={
@@ -242,7 +278,6 @@ def test_search_documents_response_contract() -> None:
     assert isinstance(result["results"], list)
     assert len(result["results"]) > 0
 
-    # Verify metadata contracts
     first_hit = result["results"][0]
     assert "chunk_index" in first_hit
     assert isinstance(first_hit["chunk_index"], int)
@@ -250,7 +285,7 @@ def test_search_documents_response_contract() -> None:
 
 
 # =====================================================================
-# --- 6. RAG PIPELINE & THREAD MANAGEMENT TESTS ---
+# --- 7. RAG PIPELINE & THREAD MANAGEMENT TESTS ---
 # =====================================================================
 
 
@@ -312,19 +347,15 @@ def test_delete_thread_endpoint(mock_generate) -> None:
 
     mock_generate.return_value = LLMInternalResponse(text="Mock reply.", is_valid=True)
 
-    # 1. Ask a question to generate a thread
     ask_res = client.post("/ask/", json={"workspace_id": ws_id, "query": "Hello?", "top_k": 1})
     thread_id = ask_res.json()["thread_id"]
 
-    # 2. Verify thread exists in list
     threads_res = client.get(f"/workspaces/{ws_id}/threads")
     assert len(threads_res.json()["threads"]) == 1
 
-    # 3. Delete the thread
     del_res = client.delete(f"/threads/{thread_id}")
     assert del_res.status_code == 200
 
-    # 4. Verify thread list is now empty
     threads_after = client.get(f"/workspaces/{ws_id}/threads")
     assert len(threads_after.json()["threads"]) == 0
 
@@ -360,7 +391,7 @@ def test_ask_question_real_model() -> None:
 
 
 # =====================================================================
-# --- 7. BATCH INGESTION & MULTI-STREAM TESTS ---
+# --- 8. BATCH INGESTION & MULTI-STREAM TESTS ---
 # =====================================================================
 
 
@@ -368,7 +399,6 @@ def test_upload_batch_success_and_upsert() -> None:
     """Verify multi-file batch ingestion correctly tracks new saves vs clean upserts."""
     ws_id = _create_test_workspace("Batch Success WS")
 
-    # 1. Initial batch upload of two distinct files
     files_batch = [
         ("files", ("doc_alpha.txt", b"Alpha document content.", "text/plain")),
         ("files", ("doc_beta.csv", b"id,val\n1,100\n2,200", "text/csv")),
@@ -385,7 +415,6 @@ def test_upload_batch_success_and_upsert() -> None:
     assert data1["summary"]["upserts"] == 0
     assert data1["summary"]["failed"] == 0
 
-    # 2. Second batch re-uploading doc_alpha.txt with modified content
     files_reupload = [
         ("files", ("doc_alpha.txt", b"Alpha document updated content.", "text/plain")),
     ]
@@ -408,10 +437,7 @@ def test_upload_batch_mixed_validity_and_unnamed_streams() -> None:
     files_mixed = [
         ("files", ("valid_doc.txt", b"Valid text stream.", "text/plain")),
         ("files", ("malicious.exe", b"binary executable payload", "application/octet-stream")),
-        (
-            "files",
-            ("   ", b"unnamed stream bytes", "text/plain"),
-        ),
+        ("files", ("   ", b"unnamed stream bytes", "text/plain")),
     ]
     res = client.post(
         "/upload/batch/",
@@ -430,7 +456,7 @@ def test_upload_batch_mixed_validity_and_unnamed_streams() -> None:
 
 
 # =====================================================================
-# --- 8. CONVERSATION HISTORY & THREAD LISTING TESTS ---
+# --- 9. CONVERSATION HISTORY & THREAD LISTING TESTS ---
 # =====================================================================
 
 
@@ -439,7 +465,6 @@ def test_list_threads_and_get_message_history(mock_generate) -> None:
     """Verify thread list cards and chronological message turn retrieval."""
     ws_id = _create_test_workspace("History Tracking WS")
 
-    # 1. Ingest dummy document so vector search finds context and triggers generate_answer
     client.post(
         "/upload/",
         files={"file": ("dummy.txt", b"dummy context", "text/plain")},
@@ -450,7 +475,6 @@ def test_list_threads_and_get_message_history(mock_generate) -> None:
         text="Mocked historical response.", is_valid=True
     )
 
-    # 2. Execute two RAG turns to build conversation history
     ask1 = client.post(
         "/ask/", json={"workspace_id": ws_id, "query": "First question?", "top_k": 1}
     )
@@ -465,7 +489,6 @@ def test_list_threads_and_get_message_history(mock_generate) -> None:
         },
     )
 
-    # 3. Assert thread listing contract
     threads_res = client.get(f"/workspaces/{ws_id}/threads")
     assert threads_res.status_code == 200
     t_data = threads_res.json()
@@ -474,7 +497,6 @@ def test_list_threads_and_get_message_history(mock_generate) -> None:
     assert t_data["threads"][0]["message_count"] == 4
     assert t_data["threads"][0]["last_query"] == "Second follow-up?"
 
-    # 4. Assert message history contract
     msgs_res = client.get(f"/threads/{thread_id}/messages")
     assert msgs_res.status_code == 200
     m_data = msgs_res.json()
@@ -487,17 +509,15 @@ def test_list_threads_and_get_message_history(mock_generate) -> None:
 
 
 # =====================================================================
-# --- 9. MODEL MISMATCH & DEFENSIVE BOUNDARY TESTS ---
+# --- 10. MODEL MISMATCH & DEFENSIVE BOUNDARY TESTS ---
 # =====================================================================
 
 
 def test_model_mismatch_safeguards() -> None:
     """Verify strict 400 rejection when request models violate locked workspace dimensions."""
     ws_id = _create_test_workspace("Locked Model WS")
-
     different_model = "differentmodel:latest"
 
-    # 1. Upload mismatch
     up_res = client.post(
         "/upload/",
         files={"file": ("test.txt", b"content", "text/plain")},
@@ -506,7 +526,6 @@ def test_model_mismatch_safeguards() -> None:
     assert up_res.status_code == 400
     assert "permanently locked" in up_res.json()["detail"]
 
-    # 2. Search mismatch
     search_res = client.post(
         "/search/",
         json={"workspace_id": ws_id, "query": "test", "embedding_model": different_model},
@@ -514,7 +533,6 @@ def test_model_mismatch_safeguards() -> None:
     assert search_res.status_code == 400
     assert "locked model" in search_res.json()["detail"]
 
-    # 3. Ask mismatch
     ask_res = client.post(
         "/ask/",
         json={"workspace_id": ws_id, "query": "test", "embedding_model": different_model},

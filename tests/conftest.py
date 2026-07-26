@@ -4,7 +4,7 @@ import shutil
 import psycopg
 import pytest
 
-# OVERRIDE THE DATABASE NAME GLOBALLY
+# MANDATORY: Override database name globally BEFORE importing project modules
 os.environ["DB_NAME"] = "localragvault_test"
 
 from core.config import BASE_DIR, DB_HOST, DB_PASSWORD, DB_PORT, DB_USER
@@ -18,45 +18,43 @@ def setup_test_database():
     Automatically provisions the test database and vector extension if missing.
     """
     try:
-        # 1. Connect to default db to create the test database
-        conn = psycopg.connect(
+        # 1. Connect to default postgres db to create the isolated test database
+        with psycopg.connect(
             dbname="postgres",
             user=DB_USER,
             password=DB_PASSWORD,
             host=DB_HOST,
             port=DB_PORT,
             autocommit=True,
-        )
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM pg_database WHERE datname = 'localragvault_test'")
-            if not cur.fetchone():
-                print("\nProvisioning isolated test database: localragvault_test...")
-                cur.execute("CREATE DATABASE localragvault_test")
-        conn.close()
+        ) as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM pg_database WHERE datname = 'localragvault_test'")
+                if not cur.fetchone():
+                    print("\nProvisioning isolated test database: localragvault_test...")
+                    cur.execute("CREATE DATABASE localragvault_test")
 
-        # 2. Connect to the test database to check/add the vector extension
-        conn_test = psycopg.connect(
+        # 2. Connect to the test database to verify/install the pgvector extension
+        with psycopg.connect(
             dbname="localragvault_test",
             user=DB_USER,
             password=DB_PASSWORD,
             host=DB_HOST,
             port=DB_PORT,
             autocommit=True,
-        )
-        with conn_test.cursor() as cur:
-            cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
-            if not cur.fetchone():
-                try:
-                    cur.execute("CREATE EXTENSION vector")
-                except psycopg.errors.InsufficientPrivilege:
-                    pytest.exit(
-                        "\n❌ Missing superuser permissions to install pgvector.\n"
-                        "Run this command in your terminal once to fix it:\n"
-                        'sudo -u postgres psql -d localragvault_test -c "CREATE EXTENSION vector;"'
-                    )
-        conn_test.close()
+        ) as conn_test:
+            with conn_test.cursor() as cur:
+                cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+                if not cur.fetchone():
+                    try:
+                        cur.execute("CREATE EXTENSION vector")
+                    except psycopg.errors.InsufficientPrivilege:
+                        pytest.exit(
+                            "\n❌ Missing superuser permissions to install pgvector.\n"
+                            "Run this command in your terminal once to fix it:\n"
+                            'sudo -u postgres psql -d localragvault_test -c "CREATE EXTENSION vector;"'
+                        )
 
-        # 3. Initialize application tables
+        # 3. Initialize application schema
         init_db()
 
     except Exception as e:
@@ -67,11 +65,9 @@ def setup_test_database():
 def clean_database():
     """
     Runs BEFORE AND AFTER EVERY test.
-    Ensures that tests do not pollute each other's vector space or chat history.
+    Ensures tests do not pollute each other's vector space or chat history.
     """
     yield
-
-    # Explicitly truncate all 4 tables with CASCADE to ensure zero state residue
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -85,4 +81,4 @@ def cleanup_test_uploads():
     yield
     test_upload_dir = BASE_DIR / "uploads_test"
     if test_upload_dir.exists():
-        shutil.rmtree(test_upload_dir)
+        shutil.rmtree(test_upload_dir, ignore_errors=True)
