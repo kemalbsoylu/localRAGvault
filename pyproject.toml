@@ -5,22 +5,22 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.136.0",
-    "ollama>=0.6.1",
-    "pgvector>=0.4.2",
-    "psycopg[binary]>=3.3.3",
-    "pydantic>=2.13.3",
+    "fastapi>=0.140.0",
+    "ollama>=0.6.2",
+    "pgvector>=0.5.0",
+    "psycopg[binary]>=3.3.4",
+    "pydantic>=2.13.4",
     "pypdf>=6.14.2",
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "python-docx>=1.2.0",
     "python-dotenv>=1.2.2",
-    "python-multipart>=0.0.26",
-    "requests>=2.33.1",
-    "ruff>=0.15.22",
-    "streamlit>=1.56.0",
-    "ty>=0.0.60",
-    "uvicorn>=0.45.0",
+    "python-multipart>=0.0.32",
+    "requests>=2.34.2",
+    "ruff>=0.16.0",
+    "streamlit>=1.60.0",
+    "ty>=0.0.63",
+    "uvicorn>=0.51.0",
 ]
 [tool.pytest.ini_options]
 pythonpath = ["."]
