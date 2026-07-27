@@ -291,12 +291,13 @@ with st.sidebar:
             )
 
             if submit_workspace and not st.session_state.is_processing:
-                if not new_ws_name.strip():
+                cleaned_name = new_ws_name.strip()
+                if not cleaned_name:
                     st.error("Workspace name cannot be empty.")
                 else:
                     st.session_state.is_processing = True
                     st.session_state.pending_workspace = {
-                        "name": new_ws_name,
+                        "name": cleaned_name,
                         "embedding_model": new_ws_embed,
                     }
                     st.rerun()
@@ -674,7 +675,7 @@ elif st.session_state.active_thread_id:
                                 "title": new_title_v1.strip(),
                             }
                             st.rerun()
-        thread_rename_v1_placeholder = st.empty()
+            thread_rename_v1_placeholder = st.empty()
     with col_back:
         if st.button(
             "⬅️ Back to Workspace", use_container_width=True, disabled=st.session_state.is_processing
@@ -1063,13 +1064,19 @@ if st.session_state.pending_workspace:
                     st.session_state.ws_name_input_key += 1
                     st.session_state.ws_created = True
 
-                    st.session_state.active_workspace_id = new_ws["id"]
-                    st.session_state.workspace_selector_widget = new_ws["id"]
+                    ws_id = new_ws.get("id")
+                    if ws_id:
+                        st.session_state.active_workspace_id = ws_id
                     st.session_state.active_thread_id = None
+
+                    ws_name = new_ws.get("name", pw["name"])
+                    ws_model = new_ws.get("embedding_model", pw["embedding_model"])
+                    dim_val = new_ws.get("dimension", new_ws.get("dimensions"))
+                    dim_str = f" and {dim_val} dimensions" if dim_val is not None else ""
 
                     st.session_state.flash_msg = (
                         "success",
-                        f"Workspace '{new_ws['name']}' created with `{new_ws['embedding_model']}` and {new_ws['dimension']} dimensions!",
+                        f"Workspace '{ws_name}' created with `{ws_model}`{dim_str}!",
                     )
                 else:
                     st.session_state.flash_msg = ("error", f"Error: {get_error_msg(res)}")
@@ -1162,7 +1169,6 @@ if st.session_state.pending_ws_deletion:
                 del_ws_res = requests.delete(f"{API_URL}/workspaces/{pd['id']}")
                 if del_ws_res.status_code == 200:
                     st.session_state.active_workspace_id = None
-                    st.session_state.pop("workspace_selector_widget", None)
                     st.session_state.active_thread_id = None
                     st.session_state.current_query = ""
                     st.session_state.batch_report = None
