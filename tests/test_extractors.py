@@ -27,7 +27,7 @@ def test_extract_csv_formatting() -> None:
 
 
 def test_extract_csv_empty_raises() -> None:
-    with pytest.raises(ValueError, match="empty or missing headers"):
+    with pytest.raises(ValueError, match="is empty"):
         extract_text_from_file(b"", "empty.csv")
 
 
