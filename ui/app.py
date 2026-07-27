@@ -35,6 +35,10 @@ if "pending_workspace" not in st.session_state:
     st.session_state.pending_workspace = None
 if "pending_batch_upload" not in st.session_state:
     st.session_state.pending_batch_upload = None
+if "pending_settings_patch" not in st.session_state:
+    st.session_state.pending_settings_patch = None
+if "pending_ws_deletion" not in st.session_state:
+    st.session_state.pending_ws_deletion = None
 if "batch_report" not in st.session_state:
     st.session_state.batch_report = None
 if "file_uploader_key" not in st.session_state:
@@ -162,6 +166,8 @@ def render_sources_section(
 
 def on_workspace_change():
     """Sync session state and reset pagination when user manually selects a workspace."""
+    if st.session_state.is_processing:
+        return  # Defensive guard: prevent workspace switching during active background processes
     new_id = st.session_state.workspace_selector_widget
     st.session_state.active_workspace_id = new_id
     st.session_state.last_active_workspace_id = new_id
@@ -192,77 +198,9 @@ if st.session_state.flash_msg:
             disabled=st.session_state.is_processing,
             help="Dismiss notification",
         ):
-            st.session_state.flash_msg = None
-            st.rerun()
-
-
-# --- BACKGROUND API EXECUTION ---
-
-if st.session_state.pending_workspace:
-    pw = st.session_state.pending_workspace
-    st.session_state.pending_workspace = None
-    with st.spinner(f"Probing model and initializing workspace '{pw['name']}'..."):
-        try:
-            res = requests.post(
-                f"{API_URL}/workspaces/",
-                json={"name": pw["name"], "embedding_model": pw["embedding_model"]},
-            )
-            if res.status_code == 200:
-                new_ws = res.json()
-                st.session_state.ws_name_input_key += 1
-                st.session_state.ws_created = True
-
-                # Lock both state variables to the newly created workspace
-                st.session_state.active_workspace_id = new_ws["id"]
-                st.session_state.workspace_selector_widget = new_ws["id"]
-                st.session_state.active_thread_id = None
-
-                st.session_state.flash_msg = (
-                    "success",
-                    f"Workspace '{new_ws['name']}' created with `{new_ws['embedding_model']}` and {new_ws['dimension']} dimensions!",
-                )
-            else:
-                st.session_state.flash_msg = ("error", f"Error: {get_error_msg(res)}")
-        except requests.exceptions.ConnectionError:
-            st.session_state.flash_msg = ("error", "Backend unreachable. Is FastAPI running?")
-    st.session_state.is_processing = False
-    st.rerun()
-
-if st.session_state.pending_batch_upload:
-    pu = st.session_state.pending_batch_upload
-    st.session_state.pending_batch_upload = None
-    with st.spinner(f"Batch ingesting {len(pu['files'])} file(s) and calculating embeddings..."):
-        files_payload = [
-            ("files", (name, content, "application/octet-stream")) for name, content in pu["files"]
-        ]
-        data_payload = {
-            "workspace_id": pu["workspace_id"],
-            "embedding_model": pu["embedding_model"],
-        }
-        try:
-            res = requests.post(f"{API_URL}/upload/batch/", files=files_payload, data=data_payload)
-            if res.status_code == 200:
-                report_data = res.json()
-                st.session_state.batch_report = report_data
-                st.session_state.file_uploader_key += 1
-
-                sum_data = report_data["summary"]
-                if sum_data["failed"] == 0:
-                    st.session_state.flash_msg = (
-                        "success",
-                        f"Batch ingestion complete! Processed {sum_data['successful']} new and {sum_data['upserts']} updated files ({sum_data['total_chunks_saved']} chunks saved).",
-                    )
-                else:
-                    st.session_state.flash_msg = (
-                        "error",
-                        f"Batch ingestion finished with errors: {sum_data['failed']} file(s) failed to ingest. Check report from the sidebar.",
-                    )
-            else:
-                st.session_state.flash_msg = ("error", f"Batch upload failed: {get_error_msg(res)}")
-        except requests.exceptions.ConnectionError:
-            st.session_state.flash_msg = ("error", "Backend unreachable.")
-    st.session_state.is_processing = False
-    st.rerun()
+            if not st.session_state.is_processing:
+                st.session_state.flash_msg = None
+                st.rerun()
 
 
 # --- DATA FETCHING & STATE VALIDATION ---
@@ -274,13 +212,9 @@ workspace_ids = [ws["id"] for ws in workspaces]
 if st.session_state.active_workspace_id not in workspace_ids:
     st.session_state.active_workspace_id = workspace_ids[0] if workspace_ids else None
 
-# Keep widget state perfectly in sync before widget renders
-if st.session_state.active_workspace_id:
-    if (
-        "workspace_selector_widget" not in st.session_state
-        or st.session_state.workspace_selector_widget not in workspace_ids
-    ):
-        st.session_state.workspace_selector_widget = st.session_state.active_workspace_id
+# Strict 1:1 synchronization between active_workspace_id and selectbox widget state
+if st.session_state.active_workspace_id in workspace_ids:
+    st.session_state.workspace_selector_widget = st.session_state.active_workspace_id
 else:
     st.session_state.pop("workspace_selector_widget", None)
 
@@ -337,7 +271,7 @@ with st.sidebar:
                 "Create & Lock Dimensions", disabled=st.session_state.is_processing
             )
 
-            if submit_workspace:
+            if submit_workspace and not st.session_state.is_processing:
                 if not new_ws_name.strip():
                     st.error("Workspace name cannot be empty.")
                 else:
@@ -347,6 +281,7 @@ with st.sidebar:
                         "embedding_model": new_ws_embed,
                     }
                     st.rerun()
+        ws_creation_placeholder = st.empty()
 
     if active_workspace:
         # Reset pagination limits automatically when switching workspaces
@@ -375,8 +310,9 @@ with st.sidebar:
                         disabled=st.session_state.is_processing,
                         help="Close report",
                     ):
-                        st.session_state.batch_report = None
-                        st.rerun()
+                        if not st.session_state.is_processing:
+                            st.session_state.batch_report = None
+                            st.rerun()
 
                 sum_data = rep["summary"]
                 c1, c2, c3, c4 = st.columns(4)
@@ -417,31 +353,34 @@ with st.sidebar:
                 "Ingest Documents", disabled=st.session_state.is_processing
             )
 
-            if submit_upload and uploaded_files:
-                max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
-                oversized_files = [f.name for f in uploaded_files if f.size > max_bytes]
+            if submit_upload and not st.session_state.is_processing:
+                if uploaded_files:
+                    max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
+                    oversized_files = [f.name for f in uploaded_files if f.size > max_bytes]
 
-                if oversized_files:
-                    st.error(
-                        f"Upload blocked: The following files exceed the {MAX_FILE_SIZE_MB}MB limit: {', '.join(oversized_files)}"
-                    )
+                    if oversized_files:
+                        st.error(
+                            f"Upload blocked: The following files exceed the {MAX_FILE_SIZE_MB}MB limit: {', '.join(oversized_files)}"
+                        )
+                    else:
+                        st.session_state.is_processing = True
+                        st.session_state.pending_batch_upload = {
+                            "files": [(f.name, f.getvalue()) for f in uploaded_files],
+                            "workspace_id": active_workspace["id"],
+                            "embedding_model": active_workspace["embedding_model"],
+                        }
+                        st.rerun()
                 else:
-                    st.session_state.is_processing = True
-                    st.session_state.pending_batch_upload = {
-                        "files": [(f.name, f.getvalue()) for f in uploaded_files],
-                        "workspace_id": active_workspace["id"],
-                        "embedding_model": active_workspace["embedding_model"],
-                    }
-                    st.rerun()
-            elif submit_upload:
-                st.warning("Please select at least one file first.")
+                    st.warning("Please select at least one file first.")
+        batch_upload_placeholder = st.empty()
 
         st.markdown("---")
         st.header(f"📂 Inventory: {active_workspace['name']}")
         if st.button(
             "Refresh Inventory", disabled=st.session_state.is_processing, use_container_width=True
         ):
-            st.rerun()
+            if not st.session_state.is_processing:
+                st.rerun()
 
         try:
             inv_res = requests.get(
@@ -474,21 +413,23 @@ with st.sidebar:
                                 disabled=not confirm_del_file or st.session_state.is_processing,
                                 use_container_width=True,
                             ):
-                                with st.spinner(f"Deleting '{doc['filename']}'..."):
-                                    del_res = requests.delete(
-                                        f"{API_URL}/documents/{active_workspace['id']}/{doc['filename']}"
-                                    )
-                                    if del_res.status_code == 200:
-                                        st.session_state.pop(
-                                            f"chk_{active_workspace['id']}_{doc['filename']}", None
+                                if not st.session_state.is_processing:
+                                    with st.spinner(f"Deleting '{doc['filename']}'..."):
+                                        del_res = requests.delete(
+                                            f"{API_URL}/documents/{active_workspace['id']}/{doc['filename']}"
                                         )
-                                        st.session_state.flash_msg = (
-                                            "success",
-                                            f"Deleted '{doc['filename']}'.",
-                                        )
-                                        st.rerun()
-                                    else:
-                                        st.error(f"Deletion failed: {get_error_msg(del_res)}")
+                                        if del_res.status_code == 200:
+                                            st.session_state.pop(
+                                                f"chk_{active_workspace['id']}_{doc['filename']}",
+                                                None,
+                                            )
+                                            st.session_state.flash_msg = (
+                                                "success",
+                                                f"Deleted '{doc['filename']}'.",
+                                            )
+                                            st.rerun()
+                                        else:
+                                            st.error(f"Deletion failed: {get_error_msg(del_res)}")
 
                     # Pagination Controls for Inventory
                     if has_more_docs or total_docs > len(inventory):
@@ -498,8 +439,9 @@ with st.sidebar:
                             use_container_width=True,
                             disabled=st.session_state.is_processing,
                         ):
-                            st.session_state.inventory_limit += DEFAULT_PAGE_LIMIT
-                            st.rerun()
+                            if not st.session_state.is_processing:
+                                st.session_state.inventory_limit += DEFAULT_PAGE_LIMIT
+                                st.rerun()
                     else:
                         st.caption("*All files loaded*")
 
@@ -510,8 +452,9 @@ with st.sidebar:
                             use_container_width=True,
                             disabled=st.session_state.is_processing,
                         ):
-                            st.session_state.inventory_limit = DEFAULT_PAGE_LIMIT
-                            st.rerun()
+                            if not st.session_state.is_processing:
+                                st.session_state.inventory_limit = DEFAULT_PAGE_LIMIT
+                                st.rerun()
                 else:
                     st.info("Vault is empty.")
             else:
@@ -597,7 +540,7 @@ with st.sidebar:
                 disabled=st.session_state.is_processing,
             )
 
-            if btn_save_settings:
+            if btn_save_settings and not st.session_state.is_processing:
                 new_prompt_val = cfg_system_prompt.strip() if cfg_system_prompt.strip() else None
                 if (
                     cfg_chunk_size == active_workspace["chunk_size"]
@@ -610,28 +553,20 @@ with st.sidebar:
                 ):
                     st.info("ℹ️ No changes detected. Settings were not modified.")
                 else:
-                    patch_payload = {
-                        "chunk_size": cfg_chunk_size,
-                        "chunk_overlap": cfg_chunk_overlap,
-                        "top_k": cfg_top_k,
-                        "similarity_threshold": cfg_similarity,
-                        "chat_history_limit": cfg_history_limit,
-                        "system_prompt": new_prompt_val,
+                    st.session_state.is_processing = True
+                    st.session_state.pending_settings_patch = {
+                        "workspace_id": active_workspace["id"],
+                        "payload": {
+                            "chunk_size": cfg_chunk_size,
+                            "chunk_overlap": cfg_chunk_overlap,
+                            "top_k": cfg_top_k,
+                            "similarity_threshold": cfg_similarity,
+                            "chat_history_limit": cfg_history_limit,
+                            "system_prompt": new_prompt_val,
+                        },
                     }
-                    try:
-                        patch_res = requests.patch(
-                            f"{API_URL}/workspaces/{active_workspace['id']}", json=patch_payload
-                        )
-                        if patch_res.status_code == 200:
-                            st.session_state.flash_msg = (
-                                "success",
-                                "Workspace settings updated successfully!",
-                            )
-                            st.rerun()
-                        else:
-                            st.error(f"Failed to update settings: {get_error_msg(patch_res)}")
-                    except requests.exceptions.ConnectionError:
-                        st.error("Backend is unreachable.")
+                    st.rerun()
+            settings_save_placeholder = st.empty()
 
         # Workspace Deletion UI
         with st.expander(f"⚠️ Danger Zone: Delete '{active_workspace['name']}'", expanded=False):
@@ -646,27 +581,14 @@ with st.sidebar:
                 disabled=not confirm_del_ws or st.session_state.is_processing,
                 use_container_width=True,
             ):
-                with st.spinner(f"Deleting workspace '{active_workspace['name']}'..."):
-                    try:
-                        del_ws_res = requests.delete(
-                            f"{API_URL}/workspaces/{active_workspace['id']}"
-                        )
-                        if del_ws_res.status_code == 200:
-                            st.session_state.active_workspace_id = None
-                            st.session_state.pop("workspace_selector_widget", None)
-                            st.session_state.active_thread_id = None
-                            st.session_state.current_query = ""
-                            st.session_state.batch_report = None
-                            st.session_state.pop(f"chk_del_ws_{active_workspace['id']}", None)
-                            st.session_state.flash_msg = (
-                                "success",
-                                f"Workspace '{active_workspace['name']}' deleted.",
-                            )
-                            st.rerun()
-                        else:
-                            st.error(f"Failed to delete workspace: {get_error_msg(del_ws_res)}")
-                    except requests.exceptions.ConnectionError:
-                        st.error("Backend unreachable.")
+                if not st.session_state.is_processing:
+                    st.session_state.is_processing = True
+                    st.session_state.pending_ws_deletion = {
+                        "id": active_workspace["id"],
+                        "name": active_workspace["name"],
+                    }
+                    st.rerun()
+            ws_delete_placeholder = st.empty()
 
 
 # --- MAIN CONTENT AREA ---
@@ -726,33 +648,35 @@ elif st.session_state.active_thread_id:
                 if st.form_submit_button(
                     "Save Title", use_container_width=True, disabled=st.session_state.is_processing
                 ):
-                    if not new_title_v1.strip():
-                        st.error("Title cannot be empty.")
-                    elif new_title_v1.strip() == thread_display_title:
-                        st.info("No changes detected.")
-                    else:
-                        with st.spinner("Renaming..."):
-                            try:
-                                res = requests.patch(
-                                    f"{API_URL}/threads/{st.session_state.active_thread_id}",
-                                    json={"title": new_title_v1.strip()},
-                                )
-                                if res.status_code == 200:
-                                    st.session_state.flash_msg = (
-                                        "success",
-                                        "Thread renamed successfully!",
+                    if not st.session_state.is_processing:
+                        if not new_title_v1.strip():
+                            st.error("Title cannot be empty.")
+                        elif new_title_v1.strip() == thread_display_title:
+                            st.info("No changes detected.")
+                        else:
+                            with st.spinner("Renaming..."):
+                                try:
+                                    res = requests.patch(
+                                        f"{API_URL}/threads/{st.session_state.active_thread_id}",
+                                        json={"title": new_title_v1.strip()},
                                     )
-                                    st.rerun()
-                                else:
-                                    st.error(f"Failed: {get_error_msg(res)}")
-                            except requests.exceptions.ConnectionError:
-                                st.error("Backend unreachable.")
+                                    if res.status_code == 200:
+                                        st.session_state.flash_msg = (
+                                            "success",
+                                            "Thread renamed successfully!",
+                                        )
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Failed: {get_error_msg(res)}")
+                                except requests.exceptions.ConnectionError:
+                                    st.error("Backend unreachable.")
     with col_back:
         if st.button(
             "⬅️ Back to Workspace", use_container_width=True, disabled=st.session_state.is_processing
         ):
-            st.session_state.active_thread_id = None
-            st.rerun()
+            if not st.session_state.is_processing:
+                st.session_state.active_thread_id = None
+                st.rerun()
 
     st.caption(
         f"**Thread ID:** `{st.session_state.active_thread_id}` | **Workspace:** `{active_workspace['name']}`"
@@ -782,8 +706,9 @@ elif st.session_state.active_thread_id:
                     use_container_width=True,
                     disabled=st.session_state.is_processing,
                 ):
-                    st.session_state.messages_limit += DEFAULT_PAGE_LIMIT * 2
-                    st.rerun()
+                    if not st.session_state.is_processing:
+                        st.session_state.messages_limit += DEFAULT_PAGE_LIMIT * 2
+                        st.rerun()
             else:
                 st.caption("*All messages loaded*")
 
@@ -794,8 +719,9 @@ elif st.session_state.active_thread_id:
                     use_container_width=True,
                     disabled=st.session_state.is_processing,
                 ):
-                    st.session_state.messages_limit = initial_msg_limit
-                    st.rerun()
+                    if not st.session_state.is_processing:
+                        st.session_state.messages_limit = initial_msg_limit
+                        st.rerun()
 
             st.markdown("---")
 
@@ -865,9 +791,10 @@ elif st.session_state.active_thread_id:
     if follow_up_query := st.chat_input(
         "Ask a follow-up question...", disabled=st.session_state.is_processing
     ):
-        st.session_state.is_processing = True
-        st.session_state.current_query = follow_up_query
-        st.rerun()
+        if not st.session_state.is_processing:
+            st.session_state.is_processing = True
+            st.session_state.current_query = follow_up_query
+            st.rerun()
 
     if (
         st.session_state.is_processing
@@ -893,10 +820,10 @@ elif st.session_state.active_thread_id:
                         st.error(f"Error: {get_error_msg(res)}")
                 except requests.exceptions.ConnectionError:
                     st.error("Backend unreachable.")
-
-        st.session_state.is_processing = False
-        st.session_state.current_query = ""
-        st.rerun()
+                finally:
+                    st.session_state.is_processing = False
+                    st.session_state.current_query = ""
+                    st.rerun()
 
 
 # VIEW 2: STANDARD VAULT SEARCH VIEW
@@ -955,7 +882,7 @@ else:
             label="Search & Generate", disabled=st.session_state.is_processing
         )
 
-    if submit_button:
+    if submit_button and not st.session_state.is_processing:
         if not query.strip():
             st.warning("⚠️ Please enter a question or topic before searching.")
         else:
@@ -964,29 +891,7 @@ else:
             st.session_state.search_input_key += 1
             st.rerun()
 
-    if st.session_state.is_processing and st.session_state.current_query:
-        with st.spinner("Searching the vault and generating an answer..."):
-            payload = {
-                "workspace_id": active_workspace["id"],
-                "query": st.session_state.current_query,
-                "embedding_model": active_workspace["embedding_model"],
-                "generation_model": st.session_state.selected_gen_model,
-                "temperature": search_temp_val,
-            }
-            try:
-                res = requests.post(f"{API_URL}/ask/", json=payload)
-                if res.status_code == 200:
-                    response_data = res.json()
-                    if "thread_id" in response_data:
-                        st.session_state.active_thread_id = response_data["thread_id"]
-                else:
-                    st.error(f"Error generating answer: {get_error_msg(res)}")
-            except requests.exceptions.ConnectionError:
-                st.error("Backend is unreachable. Is FastAPI running?")
-
-        st.session_state.is_processing = False
-        st.session_state.current_query = ""
-        st.rerun()
+    search_query_placeholder = st.empty()
 
     st.markdown("---")
 
@@ -1020,8 +925,9 @@ else:
                         use_container_width=True,
                         disabled=st.session_state.is_processing,
                     ):
-                        st.session_state.active_thread_id = t["id"]
-                        st.rerun()
+                        if not st.session_state.is_processing:
+                            st.session_state.active_thread_id = t["id"]
+                            st.rerun()
 
                 if t.get("sources"):
                     render_sources_section(
@@ -1043,27 +949,28 @@ else:
                             use_container_width=True,
                             disabled=st.session_state.is_processing,
                         ):
-                            if not new_title_v2.strip():
-                                st.error("Title cannot be empty.")
-                            elif new_title_v2.strip() == t["title"]:
-                                st.info("No changes detected.")
-                            else:
-                                with st.spinner("Renaming thread..."):
-                                    try:
-                                        res = requests.patch(
-                                            f"{API_URL}/threads/{t['id']}",
-                                            json={"title": new_title_v2.strip()},
-                                        )
-                                        if res.status_code == 200:
-                                            st.session_state.flash_msg = (
-                                                "success",
-                                                f"Thread renamed to '{new_title_v2.strip()}'.",
+                            if not st.session_state.is_processing:
+                                if not new_title_v2.strip():
+                                    st.error("Title cannot be empty.")
+                                elif new_title_v2.strip() == t["title"]:
+                                    st.info("No changes detected.")
+                                else:
+                                    with st.spinner("Renaming thread..."):
+                                        try:
+                                            res = requests.patch(
+                                                f"{API_URL}/threads/{t['id']}",
+                                                json={"title": new_title_v2.strip()},
                                             )
-                                            st.rerun()
-                                        else:
-                                            st.error(f"Failed to rename: {get_error_msg(res)}")
-                                    except requests.exceptions.ConnectionError:
-                                        st.error("Backend unreachable.")
+                                            if res.status_code == 200:
+                                                st.session_state.flash_msg = (
+                                                    "success",
+                                                    f"Thread renamed to '{new_title_v2.strip()}'.",
+                                                )
+                                                st.rerun()
+                                            else:
+                                                st.error(f"Failed to rename: {get_error_msg(res)}")
+                                        except requests.exceptions.ConnectionError:
+                                            st.error("Backend unreachable.")
 
                 with st.expander("🗑️ Delete Thread"):
                     st.warning("Deletes this conversation thread permanently.")
@@ -1078,17 +985,18 @@ else:
                         disabled=not confirm_del or st.session_state.is_processing,
                         use_container_width=True,
                     ):
-                        with st.spinner("Deleting thread..."):
-                            try:
-                                del_res = requests.delete(f"{API_URL}/threads/{t['id']}")
-                                if del_res.status_code == 200:
-                                    st.session_state.pop(f"chk_del_{t['id']}", None)
-                                    st.session_state.flash_msg = ("success", "Thread deleted.")
-                                    st.rerun()
-                                else:
-                                    st.error(f"Deletion failed: {get_error_msg(del_res)}")
-                            except requests.exceptions.ConnectionError:
-                                st.error("Backend unreachable.")
+                        if not st.session_state.is_processing:
+                            with st.spinner("Deleting thread..."):
+                                try:
+                                    del_res = requests.delete(f"{API_URL}/threads/{t['id']}")
+                                    if del_res.status_code == 200:
+                                        st.session_state.pop(f"chk_del_{t['id']}", None)
+                                        st.session_state.flash_msg = ("success", "Thread deleted.")
+                                        st.rerun()
+                                    else:
+                                        st.error(f"Deletion failed: {get_error_msg(del_res)}")
+                                except requests.exceptions.ConnectionError:
+                                    st.error("Backend unreachable.")
 
         # Pagination Controls for Threads
         st.markdown("---")
@@ -1099,8 +1007,9 @@ else:
                 use_container_width=True,
                 disabled=st.session_state.is_processing,
             ):
-                st.session_state.threads_limit += DEFAULT_PAGE_LIMIT
-                st.rerun()
+                if not st.session_state.is_processing:
+                    st.session_state.threads_limit += DEFAULT_PAGE_LIMIT
+                    st.rerun()
         else:
             st.caption("*All threads loaded*")
 
@@ -1111,5 +1020,168 @@ else:
                 use_container_width=True,
                 disabled=st.session_state.is_processing,
             ):
-                st.session_state.threads_limit = DEFAULT_PAGE_LIMIT
+                if not st.session_state.is_processing:
+                    st.session_state.threads_limit = DEFAULT_PAGE_LIMIT
+                    st.rerun()
+
+    # --- BLOCKING EXECUTION FOR VIEW 2 ---
+    if st.session_state.is_processing and st.session_state.current_query:
+        with search_query_placeholder.container():
+            with st.spinner("Searching the vault and generating an answer..."):
+                payload = {
+                    "workspace_id": active_workspace["id"],
+                    "query": st.session_state.current_query,
+                    "embedding_model": active_workspace["embedding_model"],
+                    "generation_model": st.session_state.selected_gen_model,
+                    "temperature": search_temp_val,
+                }
+                try:
+                    res = requests.post(f"{API_URL}/ask/", json=payload)
+                    if res.status_code == 200:
+                        response_data = res.json()
+                        if "thread_id" in response_data:
+                            st.session_state.active_thread_id = response_data["thread_id"]
+                    else:
+                        st.error(f"Error generating answer: {get_error_msg(res)}")
+                except requests.exceptions.ConnectionError:
+                    st.error("Backend is unreachable. Is FastAPI running?")
+                finally:
+                    st.session_state.is_processing = False
+                    st.session_state.current_query = ""
+                    st.rerun()
+
+
+# =====================================================================
+# --- EXECUTE BACKGROUND & BLOCKING TASKS ---
+# =====================================================================
+
+if st.session_state.pending_workspace:
+    pw = st.session_state.pending_workspace
+    with ws_creation_placeholder.container():
+        with st.spinner(f"Probing model and initializing workspace '{pw['name']}'..."):
+            try:
+                res = requests.post(
+                    f"{API_URL}/workspaces/",
+                    json={"name": pw["name"], "embedding_model": pw["embedding_model"]},
+                )
+                if res.status_code == 200:
+                    new_ws = res.json()
+                    st.session_state.ws_name_input_key += 1
+                    st.session_state.ws_created = True
+
+                    st.session_state.active_workspace_id = new_ws["id"]
+                    st.session_state.workspace_selector_widget = new_ws["id"]
+                    st.session_state.active_thread_id = None
+
+                    st.session_state.flash_msg = (
+                        "success",
+                        f"Workspace '{new_ws['name']}' created with `{new_ws['embedding_model']}` and {new_ws['dimension']} dimensions!",
+                    )
+                else:
+                    st.session_state.flash_msg = ("error", f"Error: {get_error_msg(res)}")
+            except requests.exceptions.ConnectionError:
+                st.session_state.flash_msg = ("error", "Backend unreachable. Is FastAPI running?")
+            finally:
+                st.session_state.pending_workspace = None
+                st.session_state.is_processing = False
+                st.rerun()
+
+if st.session_state.pending_batch_upload:
+    pu = st.session_state.pending_batch_upload
+    with batch_upload_placeholder.container():
+        with st.spinner(
+            f"Batch ingesting {len(pu['files'])} file(s) and calculating embeddings..."
+        ):
+            files_payload = [
+                ("files", (name, content, "application/octet-stream"))
+                for name, content in pu["files"]
+            ]
+            data_payload = {
+                "workspace_id": pu["workspace_id"],
+                "embedding_model": pu["embedding_model"],
+            }
+            try:
+                res = requests.post(
+                    f"{API_URL}/upload/batch/", files=files_payload, data=data_payload
+                )
+                if res.status_code == 200:
+                    report_data = res.json()
+                    st.session_state.batch_report = report_data
+                    st.session_state.file_uploader_key += 1
+
+                    sum_data = report_data["summary"]
+                    if sum_data["failed"] == 0:
+                        st.session_state.flash_msg = (
+                            "success",
+                            f"Batch ingestion complete! Processed {sum_data['successful']} new and {sum_data['upserts']} updated files ({sum_data['total_chunks_saved']} chunks saved).",
+                        )
+                    else:
+                        st.session_state.flash_msg = (
+                            "error",
+                            f"Batch ingestion finished with errors: {sum_data['failed']} file(s) failed to ingest. Check report from the sidebar.",
+                        )
+                else:
+                    st.session_state.flash_msg = (
+                        "error",
+                        f"Batch upload failed: {get_error_msg(res)}",
+                    )
+            except requests.exceptions.ConnectionError:
+                st.session_state.flash_msg = ("error", "Backend unreachable.")
+            finally:
+                st.session_state.pending_batch_upload = None
+                st.session_state.is_processing = False
+                st.rerun()
+
+if st.session_state.pending_settings_patch:
+    ps = st.session_state.pending_settings_patch
+    with settings_save_placeholder.container():
+        with st.spinner("Saving workspace configuration..."):
+            try:
+                patch_res = requests.patch(
+                    f"{API_URL}/workspaces/{ps['workspace_id']}", json=ps["payload"]
+                )
+                if patch_res.status_code == 200:
+                    st.session_state.flash_msg = (
+                        "success",
+                        "Workspace settings updated successfully!",
+                    )
+                else:
+                    st.session_state.flash_msg = (
+                        "error",
+                        f"Failed to update settings: {get_error_msg(patch_res)}",
+                    )
+            except requests.exceptions.ConnectionError:
+                st.session_state.flash_msg = ("error", "Backend is unreachable.")
+            finally:
+                st.session_state.pending_settings_patch = None
+                st.session_state.is_processing = False
+                st.rerun()
+
+if st.session_state.pending_ws_deletion:
+    pd = st.session_state.pending_ws_deletion
+    with ws_delete_placeholder.container():
+        with st.spinner(f"Deleting workspace '{pd['name']}'..."):
+            try:
+                del_ws_res = requests.delete(f"{API_URL}/workspaces/{pd['id']}")
+                if del_ws_res.status_code == 200:
+                    st.session_state.active_workspace_id = None
+                    st.session_state.pop("workspace_selector_widget", None)
+                    st.session_state.active_thread_id = None
+                    st.session_state.current_query = ""
+                    st.session_state.batch_report = None
+                    st.session_state.pop(f"chk_del_ws_{pd['id']}", None)
+                    st.session_state.flash_msg = (
+                        "success",
+                        f"Workspace '{pd['name']}' deleted.",
+                    )
+                else:
+                    st.session_state.flash_msg = (
+                        "error",
+                        f"Failed to delete workspace: {get_error_msg(del_ws_res)}",
+                    )
+            except requests.exceptions.ConnectionError:
+                st.session_state.flash_msg = ("error", "Backend unreachable.")
+            finally:
+                st.session_state.pending_ws_deletion = None
+                st.session_state.is_processing = False
                 st.rerun()
