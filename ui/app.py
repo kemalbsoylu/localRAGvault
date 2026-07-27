@@ -714,10 +714,40 @@ elif st.session_state.active_thread_id:
         current_thread["title"] if current_thread else st.session_state.active_thread_id
     )
 
-    col1, col2 = st.columns([8, 2])
+    col1, col_rename, col_back = st.columns([6, 2, 2])
     with col1:
         st.header(f"💬 {thread_display_title}")
-    with col2:
+    with col_rename:
+        with st.popover("✏️ Rename", use_container_width=True):
+            with st.form(key=f"rename_form_v1_{st.session_state.active_thread_id}"):
+                new_title_v1 = st.text_input(
+                    "New Thread Title", value=thread_display_title, max_chars=100
+                )
+                if st.form_submit_button(
+                    "Save Title", use_container_width=True, disabled=st.session_state.is_processing
+                ):
+                    if not new_title_v1.strip():
+                        st.error("Title cannot be empty.")
+                    elif new_title_v1.strip() == thread_display_title:
+                        st.info("No changes detected.")
+                    else:
+                        with st.spinner("Renaming..."):
+                            try:
+                                res = requests.patch(
+                                    f"{API_URL}/threads/{st.session_state.active_thread_id}",
+                                    json={"title": new_title_v1.strip()},
+                                )
+                                if res.status_code == 200:
+                                    st.session_state.flash_msg = (
+                                        "success",
+                                        "Thread renamed successfully!",
+                                    )
+                                    st.rerun()
+                                else:
+                                    st.error(f"Failed: {get_error_msg(res)}")
+                            except requests.exceptions.ConnectionError:
+                                st.error("Backend unreachable.")
+    with col_back:
         if st.button(
             "⬅️ Back to Workspace", use_container_width=True, disabled=st.session_state.is_processing
         ):
@@ -999,6 +1029,41 @@ else:
                         key_prefix=f"thread_card_{t['id']}",
                         expander_title="📚 View Relevant Document Chunks in Latest Reply",
                     )
+
+                with st.expander("✏️ Rename Thread"):
+                    with st.form(key=f"rename_form_v2_{t['id']}"):
+                        new_title_v2 = st.text_input(
+                            "New Title",
+                            value=t["title"],
+                            max_chars=100,
+                            key=f"input_rename_{t['id']}",
+                        )
+                        if st.form_submit_button(
+                            "💾 Save New Title",
+                            use_container_width=True,
+                            disabled=st.session_state.is_processing,
+                        ):
+                            if not new_title_v2.strip():
+                                st.error("Title cannot be empty.")
+                            elif new_title_v2.strip() == t["title"]:
+                                st.info("No changes detected.")
+                            else:
+                                with st.spinner("Renaming thread..."):
+                                    try:
+                                        res = requests.patch(
+                                            f"{API_URL}/threads/{t['id']}",
+                                            json={"title": new_title_v2.strip()},
+                                        )
+                                        if res.status_code == 200:
+                                            st.session_state.flash_msg = (
+                                                "success",
+                                                f"Thread renamed to '{new_title_v2.strip()}'.",
+                                            )
+                                            st.rerun()
+                                        else:
+                                            st.error(f"Failed to rename: {get_error_msg(res)}")
+                                    except requests.exceptions.ConnectionError:
+                                        st.error("Backend unreachable.")
 
                 with st.expander("🗑️ Delete Thread"):
                     st.warning("Deletes this conversation thread permanently.")

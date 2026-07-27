@@ -141,6 +141,26 @@ class RAGQueryResponse(BaseModel):
     sources: List[DocumentSource]
 
 
+class ThreadUpdate(BaseModel):
+    title: str = Field(
+        ..., min_length=1, max_length=100, description="New title for the conversation thread."
+    )
+
+    @field_validator("title", mode="after")
+    @classmethod
+    def strip_and_validate_title(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Thread title cannot be empty or consist only of whitespace.")
+        return cleaned
+
+
+class ThreadResponse(BaseModel):
+    id: str
+    workspace_id: str
+    title: str
+
+
 class ThreadCard(BaseModel):
     id: str
     title: str

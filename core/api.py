@@ -27,6 +27,7 @@ from core.database import (
     init_db,
     insert_document_chunks,
     search_vector_db,
+    update_thread_title,
     update_workspace_settings,
 )
 from core.extractors import extract_text_from_file
@@ -46,6 +47,8 @@ from core.schemas import (
     ThreadCard,
     ThreadHistoryResponse,
     ThreadListResponse,
+    ThreadResponse,
+    ThreadUpdate,
     VectorSearchResponse,
     WorkspaceCreate,
     WorkspaceInventoryResponse,
@@ -312,6 +315,30 @@ def get_thread_history(
     except Exception as e:
         logger.error(f"Error fetching messages for thread {thread_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch message history.") from e
+
+
+@app.patch("/threads/{thread_id}", response_model=ThreadResponse)
+def rename_thread(thread_id: str, updates: ThreadUpdate) -> ThreadResponse:
+    """Updates the title of a specific conversation thread."""
+    try:
+        existing_thread = get_thread(thread_id)
+        if not existing_thread:
+            logger.warning(f"Thread rename failed: Thread '{thread_id}' not found.")
+            raise HTTPException(status_code=404, detail="Thread not found.")
+
+        updated_thread = update_thread_title(thread_id, updates.title)
+        if not updated_thread:
+            raise HTTPException(
+                status_code=500, detail="Failed to update thread title in database."
+            )
+
+        logger.info(f"Thread '{thread_id}' successfully renamed to '{updates.title}'.")
+        return ThreadResponse(**updated_thread)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error renaming thread {thread_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to rename conversation thread.") from e
 
 
 @app.delete("/threads/{thread_id}", response_model=dict)

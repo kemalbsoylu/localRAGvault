@@ -56,7 +56,7 @@ def init_db() -> None:
                         chunk_overlap INTEGER NOT NULL DEFAULT 100,
                         top_k INTEGER NOT NULL DEFAULT 5,
                         similarity_threshold REAL NOT NULL DEFAULT 0.15,
-                        chat_history_limit INTEGER NOT NULL DEFAULT 6,
+                        chat_history_limit INTEGER NOT NULL DEFAULT 10,
                         system_prompt TEXT NULL,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
@@ -392,6 +392,25 @@ def get_thread(thread_id: str) -> Optional[dict]:
         return None
     except Exception as e:
         logger.error(f"Database error fetching thread {thread_id}: {e}")
+        raise
+
+
+def update_thread_title(thread_id: str, new_title: str) -> Optional[dict]:
+    """Updates the title and last modified timestamp of a specific conversation thread."""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE threads 
+                    SET title = %s, updated_at = CURRENT_TIMESTAMP 
+                    WHERE id = %s;
+                    """,
+                    (new_title, thread_id),
+                )
+        return get_thread(thread_id)
+    except Exception as e:
+        logger.error(f"Database error updating title for thread '{thread_id}': {e}")
         raise
 
 
