@@ -1218,7 +1218,11 @@ if st.session_state.pending_file_deletion:
 
 if st.session_state.pending_thread_rename:
     ptr = st.session_state.pending_thread_rename
-    ph = thread_rename_placeholders.get(ptr["thread_id"]) or thread_rename_v1_placeholder or st.empty()
+    ph = (
+        thread_rename_placeholders.get(ptr["thread_id"])
+        or thread_rename_v1_placeholder
+        or st.empty()
+    )
     with ph.container():
         with st.spinner("Renaming thread..."):
             try:

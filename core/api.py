@@ -418,13 +418,17 @@ def _process_single_file_ingestion(
     if len(content_bytes) > max_bytes:
         raise ValueError(f"File '{filename}' exceeds maximum allowed size of {MAX_FILE_SIZE_MB}MB.")
 
+    content_text = extract_text_from_file(content_bytes, filename)
+
+    if not content_text or not content_text.strip():
+        raise ValueError(f"File '{filename}' is empty or contains no extractable text.")
+
     old_chunks = delete_document(workspace_id, filename)
     if old_chunks > 0:
         logger.info(
             f"Clean upsert triggered: Removed {old_chunks} existing vector chunks for '{filename}'."
         )
 
-    content_text = extract_text_from_file(content_bytes, filename)
     chunks = chunk_text(content_text, chunk_size=chunk_size, overlap=chunk_overlap)
     logger.info(f"Processing '{filename}' -> generated {len(chunks)} text blocks.")
 
