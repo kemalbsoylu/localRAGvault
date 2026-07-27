@@ -26,7 +26,7 @@ MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "25"))
 
 # Model Default Selections
 DEFAULT_EMBEDDING_MODEL = os.getenv("DEFAULT_EMBEDDING_MODEL", "embeddinggemma:latest")
-DEFAULT_GENERATION_MODEL = os.getenv("DEFAULT_GENERATION_MODEL", "gemma3:latest")
+DEFAULT_GENERATION_MODEL = os.getenv("DEFAULT_GENERATION_MODEL", "gemma4:latest")
 
 
 # RAG Hyperparameter System Defaults
