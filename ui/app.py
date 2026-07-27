@@ -39,6 +39,12 @@ if "pending_settings_patch" not in st.session_state:
     st.session_state.pending_settings_patch = None
 if "pending_ws_deletion" not in st.session_state:
     st.session_state.pending_ws_deletion = None
+if "pending_thread_rename" not in st.session_state:
+    st.session_state.pending_thread_rename = None
+if "pending_thread_deletion" not in st.session_state:
+    st.session_state.pending_thread_deletion = None
+if "pending_file_deletion" not in st.session_state:
+    st.session_state.pending_file_deletion = None
 if "batch_report" not in st.session_state:
     st.session_state.batch_report = None
 if "file_uploader_key" not in st.session_state:
@@ -69,6 +75,19 @@ if "last_active_workspace_id" not in st.session_state:
     st.session_state.last_active_workspace_id = None
 if "last_active_thread_id" not in st.session_state:
     st.session_state.last_active_thread_id = None
+
+# --- UI Placeholders for DOM-routed loading spinners ---
+ws_creation_placeholder = st.empty()
+batch_upload_placeholder = st.empty()
+search_query_placeholder = st.empty()
+settings_save_placeholder = st.empty()
+ws_delete_placeholder = st.empty()
+file_delete_placeholder = st.empty()
+thread_rename_v1_placeholder = st.empty()
+
+# Dynamic registries for iterative thread items
+thread_rename_placeholders = {}
+thread_delete_placeholders = {}
 
 
 def get_error_msg(response: requests.Response) -> str:
@@ -414,22 +433,14 @@ with st.sidebar:
                                 use_container_width=True,
                             ):
                                 if not st.session_state.is_processing:
-                                    with st.spinner(f"Deleting '{doc['filename']}'..."):
-                                        del_res = requests.delete(
-                                            f"{API_URL}/documents/{active_workspace['id']}/{doc['filename']}"
-                                        )
-                                        if del_res.status_code == 200:
-                                            st.session_state.pop(
-                                                f"chk_{active_workspace['id']}_{doc['filename']}",
-                                                None,
-                                            )
-                                            st.session_state.flash_msg = (
-                                                "success",
-                                                f"Deleted '{doc['filename']}'.",
-                                            )
-                                            st.rerun()
-                                        else:
-                                            st.error(f"Deletion failed: {get_error_msg(del_res)}")
+                                    st.session_state.is_processing = True
+                                    st.session_state.pending_file_deletion = {
+                                        "workspace_id": active_workspace["id"],
+                                        "filename": doc["filename"],
+                                        "chk_key": f"chk_{active_workspace['id']}_{doc['filename']}",
+                                    }
+                                    st.rerun()
+                    file_delete_placeholder = st.empty()
 
                     # Pagination Controls for Inventory
                     if has_more_docs or total_docs > len(inventory):
@@ -643,7 +654,10 @@ elif st.session_state.active_thread_id:
         with st.popover("✏️ Rename", use_container_width=True):
             with st.form(key=f"rename_form_v1_{st.session_state.active_thread_id}"):
                 new_title_v1 = st.text_input(
-                    "New Thread Title", value=thread_display_title, max_chars=100
+                    "New Thread Title",
+                    value=thread_display_title,
+                    max_chars=100,
+                    disabled=st.session_state.is_processing,
                 )
                 if st.form_submit_button(
                     "Save Title", use_container_width=True, disabled=st.session_state.is_processing
@@ -654,22 +668,13 @@ elif st.session_state.active_thread_id:
                         elif new_title_v1.strip() == thread_display_title:
                             st.info("No changes detected.")
                         else:
-                            with st.spinner("Renaming..."):
-                                try:
-                                    res = requests.patch(
-                                        f"{API_URL}/threads/{st.session_state.active_thread_id}",
-                                        json={"title": new_title_v1.strip()},
-                                    )
-                                    if res.status_code == 200:
-                                        st.session_state.flash_msg = (
-                                            "success",
-                                            "Thread renamed successfully!",
-                                        )
-                                        st.rerun()
-                                    else:
-                                        st.error(f"Failed: {get_error_msg(res)}")
-                                except requests.exceptions.ConnectionError:
-                                    st.error("Backend unreachable.")
+                            st.session_state.is_processing = True
+                            st.session_state.pending_thread_rename = {
+                                "thread_id": st.session_state.active_thread_id,
+                                "title": new_title_v1.strip(),
+                            }
+                            st.rerun()
+            thread_rename_v1_placeholder = st.empty()
     with col_back:
         if st.button(
             "⬅️ Back to Workspace", use_container_width=True, disabled=st.session_state.is_processing
@@ -943,6 +948,7 @@ else:
                             value=t["title"],
                             max_chars=100,
                             key=f"input_rename_{t['id']}",
+                            disabled=st.session_state.is_processing,
                         )
                         if st.form_submit_button(
                             "💾 Save New Title",
@@ -955,22 +961,13 @@ else:
                                 elif new_title_v2.strip() == t["title"]:
                                     st.info("No changes detected.")
                                 else:
-                                    with st.spinner("Renaming thread..."):
-                                        try:
-                                            res = requests.patch(
-                                                f"{API_URL}/threads/{t['id']}",
-                                                json={"title": new_title_v2.strip()},
-                                            )
-                                            if res.status_code == 200:
-                                                st.session_state.flash_msg = (
-                                                    "success",
-                                                    f"Thread renamed to '{new_title_v2.strip()}'.",
-                                                )
-                                                st.rerun()
-                                            else:
-                                                st.error(f"Failed to rename: {get_error_msg(res)}")
-                                        except requests.exceptions.ConnectionError:
-                                            st.error("Backend unreachable.")
+                                    st.session_state.is_processing = True
+                                    st.session_state.pending_thread_rename = {
+                                        "thread_id": t["id"],
+                                        "title": new_title_v2.strip(),
+                                    }
+                                    st.rerun()
+                    thread_rename_placeholders[t["id"]] = st.empty()
 
                 with st.expander("🗑️ Delete Thread"):
                     st.warning("Deletes this conversation thread permanently.")
@@ -986,17 +983,13 @@ else:
                         use_container_width=True,
                     ):
                         if not st.session_state.is_processing:
-                            with st.spinner("Deleting thread..."):
-                                try:
-                                    del_res = requests.delete(f"{API_URL}/threads/{t['id']}")
-                                    if del_res.status_code == 200:
-                                        st.session_state.pop(f"chk_del_{t['id']}", None)
-                                        st.session_state.flash_msg = ("success", "Thread deleted.")
-                                        st.rerun()
-                                    else:
-                                        st.error(f"Deletion failed: {get_error_msg(del_res)}")
-                                except requests.exceptions.ConnectionError:
-                                    st.error("Backend unreachable.")
+                            st.session_state.is_processing = True
+                            st.session_state.pending_thread_deletion = {
+                                "thread_id": t["id"],
+                                "chk_key": f"chk_del_{t['id']}",
+                            }
+                            st.rerun()
+                    thread_delete_placeholders[t["id"]] = st.empty()
 
         # Pagination Controls for Threads
         st.markdown("---")
@@ -1183,5 +1176,82 @@ if st.session_state.pending_ws_deletion:
                 st.session_state.flash_msg = ("error", "Backend unreachable.")
             finally:
                 st.session_state.pending_ws_deletion = None
+                st.session_state.is_processing = False
+                st.rerun()
+
+if st.session_state.pending_file_deletion:
+    pfd = st.session_state.pending_file_deletion
+    with file_delete_placeholder.container():
+        with st.spinner(f"Deleting '{pfd['filename']}'..."):
+            try:
+                del_res = requests.delete(
+                    f"{API_URL}/documents/{pfd['workspace_id']}/{pfd['filename']}"
+                )
+                if del_res.status_code == 200:
+                    st.session_state.pop(pfd["chk_key"], None)
+                    st.session_state.flash_msg = (
+                        "success",
+                        f"Deleted '{pfd['filename']}'.",
+                    )
+                else:
+                    st.session_state.flash_msg = (
+                        "error",
+                        f"Deletion failed: {get_error_msg(del_res)}",
+                    )
+            except requests.exceptions.ConnectionError:
+                st.session_state.flash_msg = ("error", "Backend unreachable.")
+            finally:
+                st.session_state.pending_file_deletion = None
+                st.session_state.is_processing = False
+                st.rerun()
+
+if st.session_state.pending_thread_rename:
+    ptr = st.session_state.pending_thread_rename
+    target_ph = thread_rename_placeholders.get(
+        ptr["thread_id"], thread_rename_v1_placeholder
+    )
+    with target_ph.container():
+        with st.spinner("Renaming thread..."):
+            try:
+                res = requests.patch(
+                    f"{API_URL}/threads/{ptr['thread_id']}",
+                    json={"title": ptr["title"]},
+                )
+                if res.status_code == 200:
+                    st.session_state.flash_msg = (
+                        "success",
+                        f"Thread renamed to '{ptr['title']}'.",
+                    )
+                else:
+                    st.session_state.flash_msg = (
+                        "error",
+                        f"Failed to rename: {get_error_msg(res)}",
+                    )
+            except requests.exceptions.ConnectionError:
+                st.session_state.flash_msg = ("error", "Backend unreachable.")
+            finally:
+                st.session_state.pending_thread_rename = None
+                st.session_state.is_processing = False
+                st.rerun()
+
+if st.session_state.pending_thread_deletion:
+    ptd = st.session_state.pending_thread_deletion
+    target_ph = thread_delete_placeholders.get(ptd["thread_id"], st.empty())
+    with target_ph.container():
+        with st.spinner("Deleting thread..."):
+            try:
+                del_res = requests.delete(f"{API_URL}/threads/{ptd['thread_id']}")
+                if del_res.status_code == 200:
+                    st.session_state.pop(ptd["chk_key"], None)
+                    st.session_state.flash_msg = ("success", "Thread deleted.")
+                else:
+                    st.session_state.flash_msg = (
+                        "error",
+                        f"Deletion failed: {get_error_msg(del_res)}",
+                    )
+            except requests.exceptions.ConnectionError:
+                st.session_state.flash_msg = ("error", "Backend unreachable.")
+            finally:
+                st.session_state.pending_thread_deletion = None
                 st.session_state.is_processing = False
                 st.rerun()
