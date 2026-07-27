@@ -76,16 +76,16 @@ if "last_active_workspace_id" not in st.session_state:
 if "last_active_thread_id" not in st.session_state:
     st.session_state.last_active_thread_id = None
 
-# --- UI Placeholders for DOM-routed loading spinners ---
-ws_creation_placeholder = st.empty()
-batch_upload_placeholder = st.empty()
-search_query_placeholder = st.empty()
-settings_save_placeholder = st.empty()
-ws_delete_placeholder = st.empty()
-file_delete_placeholder = st.empty()
-thread_rename_v1_placeholder = st.empty()
+# --- UI Placeholders ---
+ws_creation_placeholder = None
+batch_upload_placeholder = None
+search_query_placeholder = None
+settings_save_placeholder = None
+ws_delete_placeholder = None
+thread_rename_v1_placeholder = None
 
-# Dynamic registries for iterative thread items
+# Dynamic registries for iterative items
+file_delete_placeholders = {}
 thread_rename_placeholders = {}
 thread_delete_placeholders = {}
 
@@ -440,7 +440,7 @@ with st.sidebar:
                                         "chk_key": f"chk_{active_workspace['id']}_{doc['filename']}",
                                     }
                                     st.rerun()
-                    file_delete_placeholder = st.empty()
+                            file_delete_placeholders[doc["filename"]] = st.empty()
 
                     # Pagination Controls for Inventory
                     if has_more_docs or total_docs > len(inventory):
@@ -674,7 +674,7 @@ elif st.session_state.active_thread_id:
                                 "title": new_title_v1.strip(),
                             }
                             st.rerun()
-            thread_rename_v1_placeholder = st.empty()
+        thread_rename_v1_placeholder = st.empty()
     with col_back:
         if st.button(
             "⬅️ Back to Workspace", use_container_width=True, disabled=st.session_state.is_processing
@@ -1050,7 +1050,8 @@ else:
 
 if st.session_state.pending_workspace:
     pw = st.session_state.pending_workspace
-    with ws_creation_placeholder.container():
+    ph = ws_creation_placeholder or st.empty()
+    with ph.container():
         with st.spinner(f"Probing model and initializing workspace '{pw['name']}'..."):
             try:
                 res = requests.post(
@@ -1081,7 +1082,8 @@ if st.session_state.pending_workspace:
 
 if st.session_state.pending_batch_upload:
     pu = st.session_state.pending_batch_upload
-    with batch_upload_placeholder.container():
+    ph = batch_upload_placeholder or st.empty()
+    with ph.container():
         with st.spinner(
             f"Batch ingesting {len(pu['files'])} file(s) and calculating embeddings..."
         ):
@@ -1127,7 +1129,8 @@ if st.session_state.pending_batch_upload:
 
 if st.session_state.pending_settings_patch:
     ps = st.session_state.pending_settings_patch
-    with settings_save_placeholder.container():
+    ph = settings_save_placeholder or st.empty()
+    with ph.container():
         with st.spinner("Saving workspace configuration..."):
             try:
                 patch_res = requests.patch(
@@ -1152,7 +1155,8 @@ if st.session_state.pending_settings_patch:
 
 if st.session_state.pending_ws_deletion:
     pd = st.session_state.pending_ws_deletion
-    with ws_delete_placeholder.container():
+    ph = ws_delete_placeholder or st.empty()
+    with ph.container():
         with st.spinner(f"Deleting workspace '{pd['name']}'..."):
             try:
                 del_ws_res = requests.delete(f"{API_URL}/workspaces/{pd['id']}")
@@ -1181,7 +1185,8 @@ if st.session_state.pending_ws_deletion:
 
 if st.session_state.pending_file_deletion:
     pfd = st.session_state.pending_file_deletion
-    with file_delete_placeholder.container():
+    ph = file_delete_placeholders.get(pfd["filename"]) or st.empty()
+    with ph.container():
         with st.spinner(f"Deleting '{pfd['filename']}'..."):
             try:
                 del_res = requests.delete(
@@ -1207,10 +1212,8 @@ if st.session_state.pending_file_deletion:
 
 if st.session_state.pending_thread_rename:
     ptr = st.session_state.pending_thread_rename
-    target_ph = thread_rename_placeholders.get(
-        ptr["thread_id"], thread_rename_v1_placeholder
-    )
-    with target_ph.container():
+    ph = thread_rename_placeholders.get(ptr["thread_id"]) or thread_rename_v1_placeholder or st.empty()
+    with ph.container():
         with st.spinner("Renaming thread..."):
             try:
                 res = requests.patch(
@@ -1236,13 +1239,15 @@ if st.session_state.pending_thread_rename:
 
 if st.session_state.pending_thread_deletion:
     ptd = st.session_state.pending_thread_deletion
-    target_ph = thread_delete_placeholders.get(ptd["thread_id"], st.empty())
-    with target_ph.container():
+    ph = thread_delete_placeholders.get(ptd["thread_id"]) or st.empty()
+    with ph.container():
         with st.spinner("Deleting thread..."):
             try:
                 del_res = requests.delete(f"{API_URL}/threads/{ptd['thread_id']}")
                 if del_res.status_code == 200:
                     st.session_state.pop(ptd["chk_key"], None)
+                    if st.session_state.active_thread_id == ptd["thread_id"]:
+                        st.session_state.active_thread_id = None
                     st.session_state.flash_msg = ("success", "Thread deleted.")
                 else:
                     st.session_state.flash_msg = (
