@@ -35,6 +35,14 @@ class WorkspaceCreate(BaseModel):
             return normalize_tag(value)
         return value
 
+    @field_validator("name", mode="after")
+    @classmethod
+    def strip_and_validate_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Workspace name cannot be empty or consist only of whitespace.")
+        return cleaned
+
     @model_validator(mode="after")
     def validate_overlap_bounds(self) -> "WorkspaceCreate":
         if self.chunk_overlap >= self.chunk_size:
