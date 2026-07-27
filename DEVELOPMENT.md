@@ -30,9 +30,12 @@ localRAGvault/
 ├── ui/
 │   └── app.py             # Streamlit frontend featuring multi-turn chat, vault search, and settings
 ├── tests/
-│   ├── conftest.py        # Pytest fixtures, mock embeddings, and test database isolation
-│   ├── test_api.py        # Integration and unit tests covering REST endpoints and RAG flows
-│   └── ...                # Complete test suite covering extractors, database contracts, and utilities
+│   ├── conftest.py          # Pytest fixtures, mock embeddings, and isolated DB provisioning
+│   ├── test_workspaces.py   # Workspace CRUD, hyperparameter patching, and dimension safeguards
+│   ├── test_documents.py    # Document ingestion, clean upserts, batch upload telemetry, and vector search
+│   ├── test_chat_threads.py # Multi-turn RAG execution, message history, and thread renaming validation
+│   ├── test_extractors.py   # Format-specific extraction engines (PDF, DOCX, CSV, JSON, Markdown)
+│   └── test_utils.py        # Chunking physics, overlap boundary errors, and model tag normalization
 ├── uploads/               # Mirrored physical storage for ingested files (isolated by workspace ID)
 ├── logs/                  # System diagnostic logs and rotating error telemetry
 ├── pyproject.toml         # Project metadata, dependencies, Ruff linting rules, and Pytest markers
@@ -73,23 +76,23 @@ Used `uv` as the primary package manager and environment resolver. This guarante
 
 The application is configured via a `.env` file in the project root. Refer to `.env.example` for the starter template:
 
-| Variable | Default Value | Description |
-| :--- | :--- | :--- |
-| `DB_NAME` | `localragvault` | PostgreSQL database name. |
-| `DB_USER` | `postgres` | Database authentication username. |
-| `DB_PASSWORD` | *(empty)* | Database authentication password. |
-| `DB_HOST` | `localhost` | Database host address. |
-| `DB_PORT` | `5432` | Database port. |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | Endpoint URI for the local Ollama daemon. |
-| `ALLOW_CLOUD_MODELS` | `False` | Set to `True` to allow cloud models (proxies prompts remotely). |
-| `MAX_FILE_SIZE_MB` | `25` | Maximum upload file size in megabytes. |
-| `DEFAULT_EMBEDDING_MODEL`| `embeddinggemma:latest` | Default vector embedding model pulled on startup. |
-| `DEFAULT_GENERATION_MODEL`| `gemma4:latest` | Default generation LLM pulled on startup. |
-| `DEFAULT_CHUNK_SIZE` | `500` | Character length per document block. |
-| `DEFAULT_CHUNK_OVERLAP` | `100` | Overlapping character count between adjacent chunks. |
-| `DEFAULT_TOP_K` | `5` | Default number of vector chunks retrieved per search. |
-| `DEFAULT_SIMILARITY_THRESHOLD`| `0.15` | Minimum cosine similarity required to include a chunk. |
-| `DEFAULT_CHAT_HISTORY_LIMIT`| `10` | Number of historical chat turns injected into context. |
+| Variable                       | Default Value            | Description                                                     |
+|:-------------------------------|:-------------------------|:----------------------------------------------------------------|
+| `DB_NAME`                      | `localragvault`          | PostgreSQL database name.                                       |
+| `DB_USER`                      | `postgres`               | Database authentication username.                               |
+| `DB_PASSWORD`                  | *(empty)*                | Database authentication password.                               |
+| `DB_HOST`                      | `localhost`              | Database host address.                                          |
+| `DB_PORT`                      | `5432`                   | Database port.                                                  |
+| `OLLAMA_BASE_URL`              | `http://localhost:11434` | Endpoint URI for the local Ollama daemon.                       |
+| `ALLOW_CLOUD_MODELS`           | `False`                  | Set to `True` to allow cloud models (proxies prompts remotely). |
+| `MAX_FILE_SIZE_MB`             | `25`                     | Maximum upload file size in megabytes.                          |
+| `DEFAULT_EMBEDDING_MODEL`      | `embeddinggemma:latest`  | Default vector embedding model pulled on startup.               |
+| `DEFAULT_GENERATION_MODEL`     | `gemma4:latest`          | Default generation LLM pulled on startup.                       |
+| `DEFAULT_CHUNK_SIZE`           | `500`                    | Character length per document block.                            |
+| `DEFAULT_CHUNK_OVERLAP`        | `100`                    | Overlapping character count between adjacent chunks.            |
+| `DEFAULT_TOP_K`                | `5`                      | Default number of vector chunks retrieved per search.           |
+| `DEFAULT_SIMILARITY_THRESHOLD` | `0.15`                   | Minimum cosine similarity required to include a chunk.          |
+| `DEFAULT_CHAT_HISTORY_LIMIT`   | `10`                     | Number of historical chat turns injected into context.          |
 
 ---
 
@@ -100,21 +103,21 @@ Once the backend is running, explore and test endpoints interactively via FastAP
 
 ### Endpoint Summary
 
-| Method | Endpoint | Description |
-| :--- | :--- | :--- |
-| `GET` | `/models/` | Lists all downloaded models currently available in the Ollama daemon. |
-| `GET` | `/workspaces/` | Lists all active document workspaces and their locked hyperparameters. |
-| `POST` | `/workspaces/` | Creates a new workspace and probes the target model for vector dimensions. |
-| `PATCH` | `/workspaces/{id}` | Modifies workspace hyperparameters (chunk size, overlap, top-K, persona). |
-| `DELETE`| `/workspaces/{id}` | Permanently deletes a workspace, database records, and disk files. |
-| `POST` | `/upload/` | Ingests a single document (`.txt`, `.md`, `.pdf`, `.docx`, `.csv`, `.json`). |
-| `POST` | `/upload/batch/` | Batch ingests multiple files with automatic clean upserts and error telemetry. |
-| `GET` | `/inventory/{id}` | Returns a paginated list of indexed documents inside a workspace. |
-| `DELETE`| `/documents/{id}/{file}`| Purges a specific document's vector chunks and physical file. |
-| `GET` | `/workspaces/{id}/threads`| Returns paginated conversation threads for a workspace. |
-| `GET` | `/threads/{id}/messages`| Returns paginated chronological message history for a thread. |
-| `POST` | `/search/` | Executes semantic vector similarity search against workspace chunks. |
-| `POST` | `/ask/` | Executes the full multi-turn RAG pipeline, synthesizing context and history. |
+| Method   | Endpoint                   | Description                                                                    |
+|:---------|:---------------------------|:-------------------------------------------------------------------------------|
+| `GET`    | `/models/`                 | Lists all downloaded models currently available in the Ollama daemon.          |
+| `GET`    | `/workspaces/`             | Lists all active document workspaces and their locked hyperparameters.         |
+| `POST`   | `/workspaces/`             | Creates a new workspace and probes the target model for vector dimensions.     |
+| `PATCH`  | `/workspaces/{id}`         | Modifies workspace hyperparameters (chunk size, overlap, top-K, persona).      |
+| `DELETE` | `/workspaces/{id}`         | Permanently deletes a workspace, database records, and disk files.             |
+| `POST`   | `/upload/`                 | Ingests a single document (`.txt`, `.md`, `.pdf`, `.docx`, `.csv`, `.json`).   |
+| `POST`   | `/upload/batch/`           | Batch ingests multiple files with automatic clean upserts and error telemetry. |
+| `GET`    | `/inventory/{id}`          | Returns a paginated list of indexed documents inside a workspace.              |
+| `DELETE` | `/documents/{id}/{file}`   | Purges a specific document's vector chunks and physical file.                  |
+| `GET`    | `/workspaces/{id}/threads` | Returns paginated conversation threads for a workspace.                        |
+| `GET`    | `/threads/{id}/messages`   | Returns paginated chronological message history for a thread.                  |
+| `POST`   | `/search/`                 | Executes semantic vector similarity search against workspace chunks.           |
+| `POST`   | `/ask/`                    | Executes the full multi-turn RAG pipeline, synthesizing context and history.   |
 
 ---
 
