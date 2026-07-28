@@ -1,0 +1,36 @@
+# Git and version control
+.git
+.gitignore
+
+# Python environments and caches
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.venv/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+!.env.docker
+
+# Application data and logs (these will live in named volumes)
+uploads/
+uploads_test/
+logs/
+*.log
+*.sqlite3
+
+# IDEs and OS files
+.idea/
+.vscode/
+.DS_Store
+
+# Testing and linting
+.pytest_cache/
+.coverage
+htmlcov/
+.ruff_cache/

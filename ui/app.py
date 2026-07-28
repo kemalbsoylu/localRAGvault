@@ -7,6 +7,7 @@ import requests
 import streamlit as st
 
 from core.config import (
+    API_BASE_URL,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_GENERATION_MODEL,
     DEFAULT_PAGE_LIMIT,
@@ -14,7 +15,7 @@ from core.config import (
     MAX_FILE_SIZE_MB,
 )
 
-API_URL = "http://127.0.0.1:8000"
+API_URL = API_BASE_URL
 
 st.set_page_config(page_title="localRAGvault", page_icon="🗄️", layout="wide")
 st.title("🗄️ localRAGvault")

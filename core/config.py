@@ -20,6 +20,7 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 
 # Infrastructure & Governance Configuration
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 ALLOW_CLOUD_MODELS = os.getenv("ALLOW_CLOUD_MODELS", "False").lower() in ("true", "1", "yes")
 MAX_FILE_SIZE_MB = int(os.getenv("MAX_FILE_SIZE_MB", "25"))
 

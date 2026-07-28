@@ -23,17 +23,22 @@ from core.config import (
 from core.logging_config import logger
 
 
+def _get_raw_connection() -> psycopg.Connection:
+    """Establishes a raw connection to PostgreSQL without registering vector types."""
+    return psycopg.connect(
+        dbname=DB_NAME,
+        user=DB_USER,
+        password=DB_PASSWORD,
+        host=DB_HOST,
+        port=DB_PORT,
+        autocommit=True,
+    )
+
+
 def get_db_connection() -> psycopg.Connection:
-    """Establishes a connection to the database and registers the vector type."""
+    """Establishes a connection to the database and registers the pgvector type handler."""
     try:
-        conn = psycopg.connect(
-            dbname=DB_NAME,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            host=DB_HOST,
-            port=DB_PORT,
-            autocommit=True,
-        )
+        conn = _get_raw_connection()
         register_vector(conn)
         return conn
     except Exception as e:
@@ -42,8 +47,12 @@ def get_db_connection() -> psycopg.Connection:
 
 
 def init_db() -> None:
-    """Initializes the database schema if not present."""
+    """Initializes the database schema and enables pgvector if not present."""
     try:
+        with _get_raw_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -93,7 +102,7 @@ def init_db() -> None:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     );
                 """)
-        logger.info("Database schema verified and ready.")
+        logger.info("Database schema and vector extension verified and ready.")
     except Exception as e:
         logger.error(f"Critical error during database schema creation: {e}")
         raise
