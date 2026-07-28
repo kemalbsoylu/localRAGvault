@@ -1,5 +1,6 @@
 import os
 import shutil
+from unittest.mock import MagicMock, patch
 
 import psycopg
 import pytest
@@ -28,9 +29,13 @@ def setup_test_database():
             autocommit=True,
         ) as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT 1 FROM pg_database WHERE datname = 'localragvault_test'")
+                cur.execute(
+                    "SELECT 1 FROM pg_database WHERE datname = 'localragvault_test'"
+                )
                 if not cur.fetchone():
-                    print("\nProvisioning isolated test database: localragvault_test...")
+                    print(
+                        "\nProvisioning isolated test database: localragvault_test..."
+                    )
                     cur.execute("CREATE DATABASE localragvault_test")
 
         # 2. Connect to the test database to verify/install the pgvector extension
@@ -43,7 +48,9 @@ def setup_test_database():
             autocommit=True,
         ) as conn_test:
             with conn_test.cursor() as cur:
-                cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
+                cur.execute(
+                    "SELECT 1 FROM pg_extension WHERE extname = 'vector'"
+                )
                 if not cur.fetchone():
                     try:
                         cur.execute("CREATE EXTENSION vector")
@@ -82,3 +89,77 @@ def cleanup_test_uploads():
     test_upload_dir = BASE_DIR / "uploads_test"
     if test_upload_dir.exists():
         shutil.rmtree(test_upload_dir, ignore_errors=True)
+
+
+# =====================================================================
+# --- UNIVERSAL OLLAMA MOCKING FOR CI/CD UNIT TESTS ---
+# =====================================================================
+
+
+@pytest.fixture(autouse=True)
+def mock_ollama_for_unit_tests(request):
+    """
+    Runs automatically for all tests NOT marked 'integration'.
+    Intercepts outbound HTTP requests to the Ollama daemon so unit tests
+    run instantly in CI without needing real AI models downloaded.
+    """
+    # If the test is explicitly marked as an integration test, do not mock!
+    if "integration" in request.keywords:
+        yield
+        return
+
+    with (
+        patch("requests.get") as mock_get,
+        patch("requests.post") as mock_post,
+        patch("requests.delete") as mock_delete,
+    ):
+
+        # Mock GET responses (e.g., /api/tags for model inventory in test_list_models_endpoint)
+        def side_effect_get(url, *args, **kwargs):
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            if "/api/tags" in str(url):
+                mock_resp.json.return_value = {
+                    "models": [
+                        {
+                            "name": "embeddinggemma:latest",
+                            "model": "embeddinggemma:latest",
+                        },
+                        {"name": "gemma4:latest", "model": "gemma4:latest"},
+                        {
+                            "name": "differentmodel:latest",
+                            "model": "differentmodel:latest",
+                        },
+                    ]
+                }
+            return mock_resp
+
+        # Mock POST responses (/api/show, /api/embeddings, /api/embed, /api/generate)
+        def side_effect_post(url, *args, **kwargs):
+            mock_resp = MagicMock()
+            mock_resp.status_code = 200
+            if "/api/show" in str(url):
+                mock_resp.json.return_value = {
+                    "modelfile": "# Modelfile\nPARAMETER ..."
+                }
+            elif "/api/embeddings" in str(url) or "/api/embed" in str(url):
+                # Return a fake 768-dimensional vector so workspace creation and file ingestion succeed
+                mock_resp.json.return_value = {
+                    "embedding": [0.1] * 768,
+                    "embeddings": [[0.1] * 768],
+                }
+            elif "/api/generate" in str(url) or "/api/chat" in str(url):
+                mock_resp.json.return_value = {
+                    "response": "Mocked AI response.",
+                    "message": {
+                        "role": "assistant",
+                        "content": "Mocked AI response.",
+                    },
+                }
+            return mock_resp
+
+        mock_get.side_effect = side_effect_get
+        mock_post.side_effect = side_effect_post
+        mock_delete.return_value = MagicMock(status_code=200)
+
+        yield
