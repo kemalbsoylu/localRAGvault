@@ -29,13 +29,9 @@ def setup_test_database():
             autocommit=True,
         ) as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT 1 FROM pg_database WHERE datname = 'localragvault_test'"
-                )
+                cur.execute("SELECT 1 FROM pg_database WHERE datname = 'localragvault_test'")
                 if not cur.fetchone():
-                    print(
-                        "\nProvisioning isolated test database: localragvault_test..."
-                    )
+                    print("\nProvisioning isolated test database: localragvault_test...")
                     cur.execute("CREATE DATABASE localragvault_test")
 
         # 2. Connect to the test database to verify/install the pgvector extension
@@ -48,9 +44,7 @@ def setup_test_database():
             autocommit=True,
         ) as conn_test:
             with conn_test.cursor() as cur:
-                cur.execute(
-                    "SELECT 1 FROM pg_extension WHERE extname = 'vector'"
-                )
+                cur.execute("SELECT 1 FROM pg_extension WHERE extname = 'vector'")
                 if not cur.fetchone():
                     try:
                         cur.execute("CREATE EXTENSION vector")
@@ -113,7 +107,6 @@ def mock_ollama_for_unit_tests(request):
         patch("requests.post") as mock_post,
         patch("requests.delete") as mock_delete,
     ):
-
         # Mock GET responses (e.g., /api/tags for model inventory in test_list_models_endpoint)
         def side_effect_get(url, *args, **kwargs):
             mock_resp = MagicMock()
@@ -139,9 +132,7 @@ def mock_ollama_for_unit_tests(request):
             mock_resp = MagicMock()
             mock_resp.status_code = 200
             if "/api/show" in str(url):
-                mock_resp.json.return_value = {
-                    "modelfile": "# Modelfile\nPARAMETER ..."
-                }
+                mock_resp.json.return_value = {"modelfile": "# Modelfile\nPARAMETER ..."}
             elif "/api/embeddings" in str(url) or "/api/embed" in str(url):
                 # Return a fake 768-dimensional vector so workspace creation and file ingestion succeed
                 mock_resp.json.return_value = {
