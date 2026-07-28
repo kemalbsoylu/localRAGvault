@@ -1,0 +1,87 @@
+name: Release & Publish Images
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-and-publish:
+    name: Build & Push Multi-Arch Images
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU (For Multi-Arch Emulation)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GitHub Container Registry (GHCR)
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Version Tag
+        id: vars
+        run: echo "VERSION=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+
+      # ==========================================
+      # 1. Build and Push FastAPI Backend Image
+      # ==========================================
+      - name: Build and Push API Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: api
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            kemalbsoylu/localragvault:api-latest
+            kemalbsoylu/localragvault:api-${{ steps.vars.outputs.VERSION }}
+            ghcr.io/${{ github.repository }}:api-latest
+            ghcr.io/${{ github.repository }}:api-${{ steps.vars.outputs.VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ==========================================
+      # 2. Build and Push Streamlit UI Image
+      # ==========================================
+      - name: Build and Push UI Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: ui
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            kemalbsoylu/localragvault:ui-latest
+            kemalbsoylu/localragvault:ui-${{ steps.vars.outputs.VERSION }}
+            ghcr.io/${{ github.repository }}:ui-latest
+            ghcr.io/${{ github.repository }}:ui-${{ steps.vars.outputs.VERSION }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ==========================================
+      # 3. Create Automated GitHub Release
+      # ==========================================
+      - name: Generate GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          name: Release ${{ steps.vars.outputs.VERSION }}
