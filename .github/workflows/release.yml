@@ -37,9 +37,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Version Tag
+      # ==========================================
+      # Extract Version & Convert Repo to Lowercase
+      # ==========================================
+      - name: Extract Version & Lowercase Repo
         id: vars
-        run: echo "VERSION=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+        run: |
+          echo "VERSION=${GITHUB_REF_NAME}" >> $GITHUB_OUTPUT
+          echo "REPO_LOWER=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_OUTPUT
 
       # ==========================================
       # 1. Build and Push FastAPI Backend Image
@@ -54,8 +59,8 @@ jobs:
           tags: |
             kemalbsoylu/localragvault:api-latest
             kemalbsoylu/localragvault:api-${{ steps.vars.outputs.VERSION }}
-            ghcr.io/${{ github.repository }}:api-latest
-            ghcr.io/${{ github.repository }}:api-${{ steps.vars.outputs.VERSION }}
+            ghcr.io/${{ steps.vars.outputs.REPO_LOWER }}:api-latest
+            ghcr.io/${{ steps.vars.outputs.REPO_LOWER }}:api-${{ steps.vars.outputs.VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -72,8 +77,8 @@ jobs:
           tags: |
             kemalbsoylu/localragvault:ui-latest
             kemalbsoylu/localragvault:ui-${{ steps.vars.outputs.VERSION }}
-            ghcr.io/${{ github.repository }}:ui-latest
-            ghcr.io/${{ github.repository }}:ui-${{ steps.vars.outputs.VERSION }}
+            ghcr.io/${{ steps.vars.outputs.REPO_LOWER }}:ui-latest
+            ghcr.io/${{ steps.vars.outputs.REPO_LOWER }}:ui-${{ steps.vars.outputs.VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
