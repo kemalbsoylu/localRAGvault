@@ -20,53 +20,72 @@ Your privacy-first, fully local **Retrieval-Augmented Generation (RAG)** assista
 
 ## Quickstart Guide
 
-### Prerequisites
-To run localRAGvault, you will need three lightweight tools installed on your system:
-1. **[Ollama](https://ollama.com/download)** (v0.32.0 or newer) – Runs the local AI models (defaults are `gemma4` and `embeddinggemma`).
-2. **[PostgreSQL](https://www.postgresql.org/download/)** (v16.14) with the `pgvector` extension enabled – Stores your document memory.
-3. **[uv](https://docs.astral.sh/uv/getting-started/installation/)** (v0.11.32 or newer) – Python package manager.
+Use **Docker Desktop** for an isolated, one-click environment. No need to manually install Python, databases, or configure complicated background services. Docker handles everything cleanly.
 
-### Installation & Launch
+### 1. Prerequisites
+
+Before launching the app, ensure you have these two applications installed and running on your computer:
+1. **[Docker Desktop](https://www.docker.com/products/docker-desktop/)** – Runs the application containers securely.
+2. **[Ollama](https://ollama.com/download)** (v0.32.0 or newer) – Powers the local AI models on your native operating system. 
+
+*(Note: You do not need to manually download any AI models! localRAGvault will automatically pull the required default models in the background on your very first launch.)*
+
+---
+
+### 2. Allow Docker to Connect to Ollama (Mandatory One-Time Step)
+
+Because Ollama runs natively on your operating system while localRAGvault runs inside Docker Desktop, you must configure Ollama to accept incoming connections from your containers.
+
+* **macOS:** Open your terminal application and run:
+  ```bash
+  launchctl setenv OLLAMA_HOST "0.0.0.0"
+  ```
+  *(Restart the Ollama application from your menu bar after running this command).*
+
+
+* **Windows:** 
+  1. Quit the Ollama application from your bottom-right taskbar tray.
+  2. Open Control Panel > System and Security > System > Advanced system settings > Environment Variables.
+  3. Under **User variables**, click **New**, set Variable name to `OLLAMA_HOST` and Variable value to `0.0.0.0`.
+  4. Relaunch Ollama.
+
+
+* **Linux:** Edit the systemd service file by running `sudo systemctl edit ollama.service` in your terminal and add:
+  ```ini
+  [Service]
+  Environment="OLLAMA_HOST=0.0.0.0"
+  ```
+  Then reload and restart the service: `sudo systemctl daemon-reload && sudo systemctl restart ollama`.
+
+---
+
+### 3. Launch the Application
+
+Choose whichever launch method works best for you:
+
+#### Method A: Quick Launch via Docker Desktop (No Git Required)
+If you do not have Git installed or prefer not to clone source code repositories, you can launch directly using verified Docker Hub images (`kemalbsoylu/localragvault`):
+
+1. Download single configuration file: **[docker-compose.yml](https://raw.githubusercontent.com/kemalbsoylu/localRAGvault/main/docker-compose.yml)** *(Right-click the link and select "Save As..." to save it into a new, empty folder on your computer).*
+2. Open your terminal (or PowerShell/Command Prompt on Windows), navigate into that folder, and start the app:
+   ```bash
+   docker compose up -d
+   ```
+3. Open your web browser and go to **[http://localhost:8501](http://localhost:8501)**. Your secure RAG vault is ready to use!
+
+#### Method B: Clone & Launch (Using Git)
+If you prefer standard cloning or want to inspect the codebase locally:
 
 1. **Clone the repository:**
    ```bash
    git clone https://github.com/kemalbsoylu/localRAGvault.git
    cd localRAGvault
    ```
-
-2. **Create the database and enable pgvector:**
-   Run the following commands in your terminal to create the empty database and enable the vector engine (replace `postgres` with your database username if different):
+2. **Start the containers:**
    ```bash
-   psql -U postgres -c "CREATE DATABASE localragvault;"
-   psql -U postgres -d localragvault -c "CREATE EXTENSION IF NOT EXISTS vector;"
+   docker compose up -d
    ```
-
-3. **Configure your environment:**
-   Copy the example environment file and update it with your PostgreSQL credentials:
-   ```bash
-   cp .env.example .env
-   ```
-   *(Note: Once the empty database is created and your `.env` is set, the app will automatically build all required internal tables and schemas on your very first launch!)*
-
-4. **Install dependencies:**
-   ```bash
-   uv sync
-   ```
-
-5. **Start the Application:**
-   This app uses a split architecture. Open two terminal windows:
-
-   * **Terminal 1 (Start the Backend API):**
-     ```bash
-     uv run uvicorn core.api:app --reload --reload-dir core
-     ```
-     *The backend server will start at `http://127.0.0.1:8000` and initialize your database tables automatically.*
-
-   * **Terminal 2 (Start the Web Interface):**
-     ```bash
-     uv run streamlit run ui/app.py
-     ```
-     *Your browser will automatically open the interactive dashboard at `http://localhost:8501`.*
+3. Open your web browser and go to **[http://localhost:8501](http://localhost:8501)**.
 
 ---
 
@@ -81,7 +100,7 @@ If you explicitly choose to use Ollama Cloud models, authenticate your local dae
 ollama signin
 ollama pull gemma4:cloud
 ```
-Then update your `.env` file to enable cloud access:
+Then update your environment configuration to allow cloud access:
 ```env
 ALLOW_CLOUD_MODELS=True
 ```
@@ -90,8 +109,8 @@ ALLOW_CLOUD_MODELS=True
 
 ## For Developers & Contributors
 
-Interested in the technical architecture, maintainability trade-offs, API endpoints, or contributing to the codebase?
-* Read **[Architecture & Development Guide](DEVELOPMENT.md)**
+Are you a developer wanting to run the application natively without Docker (using `uv` and PostgreSQL directly), explore API endpoints, or contribute to the codebase?
+* Read **[Architecture & Development Guide](DEVELOPMENT.md)** *(Includes step-by-step native local setup instructions)*
 * Read **[Contribution Guidelines](CONTRIBUTING.md)**
 
 ---

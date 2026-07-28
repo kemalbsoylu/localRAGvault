@@ -1,11 +1,11 @@
 [project]
 name = "localragvault"
-version = "0.1.0"
+version = "1.0.0"
 description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.140.8",
+    "fastapi>=0.140.13",
     "ollama>=0.6.2",
     "pgvector>=0.5.0",
     "psycopg[binary]>=3.3.4",

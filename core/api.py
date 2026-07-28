@@ -81,7 +81,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(
     title="localRAGvault API",
     description="Local RAG pipeline backend powered by FastAPI, Ollama, and pgvector.",
-    version="0.1.0",
+    version="1.0.0",
     lifespan=lifespan,
 )
 
