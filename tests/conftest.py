@@ -94,14 +94,13 @@ def cleanup_test_uploads():
 def mock_ollama_for_unit_tests(request):
     """
     Runs automatically for all tests NOT marked 'integration'.
-    Intercepts both official 'ollama' Python SDK calls AND raw 'requests'
-    so unit tests run instantly in CI without needing real AI models.
+    Intercepts both module-level functions and pre-instantiated official 'ollama' SDK
+    class methods so unit tests run instantly in CI without needing real AI models.
     """
     if "integration" in request.keywords:
         yield
         return
 
-    # Create flexible model objects that support both attribute (.model) and dict (['model']) access
     class MockModel:
         def __init__(self, name):
             self.name = name
@@ -148,18 +147,14 @@ def mock_ollama_for_unit_tests(request):
         patch("ollama.embed", return_value=mock_embed_res),
         patch("ollama.chat", return_value=mock_chat_res),
         patch("ollama.generate", return_value=mock_chat_res),
-        patch("ollama.Client") as mock_client_cls,
+        patch("ollama.Client.list", return_value=mock_list_res),
+        patch("ollama.Client.show", return_value=mock_show_res),
+        patch("ollama.Client.embeddings", return_value=mock_embed_res),
+        patch("ollama.Client.embed", return_value=mock_embed_res),
+        patch("ollama.Client.chat", return_value=mock_chat_res),
+        patch("ollama.Client.generate", return_value=mock_chat_res),
     ):
-        # Also patch Client instance methods in case core/utils.py instantiates ollama.Client()
-        mock_client_inst = mock_client_cls.return_value
-        mock_client_inst.list.return_value = mock_list_res
-        mock_client_inst.show.return_value = mock_show_res
-        mock_client_inst.embeddings.return_value = mock_embed_res
-        mock_client_inst.embed.return_value = mock_embed_res
-        mock_client_inst.chat.return_value = mock_chat_res
-        mock_client_inst.generate.return_value = mock_chat_res
 
-        # Mock raw requests fallback
         def side_effect_get(url, *args, **kwargs):
             mock_resp = MagicMock()
             mock_resp.status_code = 200
